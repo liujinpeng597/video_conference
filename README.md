@@ -1,5 +1,7 @@
 # 同频 · 视频会议
 
+![CI](https://github.com/liujinpeng597/video_conference/actions/workflows/ci.yml/badge.svg)
+
 自托管的视频会议：浏览器之间 WebRTC 直连，后端只做账号、房间和信令。
 
 ```bash
