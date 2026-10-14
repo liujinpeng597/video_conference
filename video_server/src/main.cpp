@@ -97,6 +97,14 @@ int main(int argc, char** argv) {
     // 用 environment 传最自然, 而且它是部署配置不是日常开关。
     if (const char* ice = std::getenv("ICE_SERVERS")) setIceServers(ice);
 
+    // TURN 的 REST 临时凭证: URL 和共享密钥都配了才启用 (见 handlers.cpp / README)。
+    // 有效期可选, TURN_TTL_SECONDS 给了非正数就退回默认 12 小时。
+    const char* turnUrl = std::getenv("TURN_URL");
+    const char* turnSecret = std::getenv("TURN_SECRET");
+    long long turnTtl = 0;
+    if (const char* ttl = std::getenv("TURN_TTL_SECONDS")) turnTtl = std::strtoll(ttl, nullptr, 10);
+    if (turnUrl && *turnUrl && turnSecret && *turnSecret) setTurnConfig(turnUrl, turnSecret, turnTtl);
+
     setWebRoot(web);
     Server server(port, workers);
     if (!server.start()) return 1;

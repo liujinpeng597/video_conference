@@ -23,3 +23,9 @@ void setWebRoot(const std::string& dir);
 //   [{"urls":"stun:stun.example.com:3478"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]
 // 服务端不解析它, 原样从 /api/ice 发出去。同样要在 start() 之前设置。
 void setIceServers(const std::string& jsonArray);
+
+// TURN 的 REST 临时凭证配置 (coturn --use-auth-secret 的配套实现)。
+// 配了之后 /api/ice 会给每个登录用户现场签发 "<过期时间戳>:账号" + HMAC-SHA1 口令;
+// 不配就只下发 setIceServers 的静态列表。同样要在 start() 之前设置。
+// ttlSeconds <= 0 时用默认值 (12 小时)。
+void setTurnConfig(const std::string& url, const std::string& secret, long long ttlSeconds);

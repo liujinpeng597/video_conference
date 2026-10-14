@@ -1,0 +1,22 @@
+# 生产形态覆盖文件。用法:
+#
+#   1) bash ops/gen-cert.sh            # 生成自签证书 (或把真实证书放进 nginx/certs/)
+#   2) docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# 和默认编排的差别只有入口: nginx 从 "9000 端口明文 HTTP" 变成
+# "80 跳转 + 443 终止 TLS", 证书目录只读挂进去。
+# 证书怎么信任 / 怎么换真实证书: 见 nginx/README.md。
+#
+# 80/443 被占用时, 在 .env 里改 HTTP_PORT / HTTPS_PORT。
+# 注意: 用了 !override 语法清空基础文件里的端口/挂载, 需要 Docker Compose v2.24.4+。
+services:
+  nginx:
+    ports: !override
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes: !override
+      - ./nginx/nginx.tls.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/acme-webroot:/var/www/acme:ro
+      - ./video_client:/usr/share/nginx/html:ro

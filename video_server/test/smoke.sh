@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 全链路测试:
-#   编译 -> json 单测 -> 账号/会话 -> 保持登录 -> 房间 -> 信令(含并发顺序断言) -> 静态资源
-#   -> 多实例互通 (两个后端进程) -> 并发 -> 重启后数据还在 -> 优雅退出
+#   编译 -> 单测(json/turncred) -> 账号/会话(含登录失败锁定) -> 保持登录 -> 房间
+#   -> 信令(含并发顺序断言) -> ICE/TURN 凭证 -> 静态资源 -> 多实例互通 (两个后端进程)
+#   -> 并发 -> 重启后数据还在 -> 优雅退出
 #
 # 需要能连上的 PostgreSQL 和 Redis。指定方式:
 #   TEST_DB=postgresql://user:pass@host:port/db \
@@ -133,7 +134,7 @@ fi
 
 # ---------------------------------------------------------------- 编译
 make -s || { echo "编译失败"; exit 1; }
-make -s test || { echo "json 单测失败"; exit 1; }
+make -s test || { echo "单测失败"; exit 1; }
 
 rm -f "$LOG"
 start_server() { # [端口] [日志里的进程名]
@@ -240,6 +241,36 @@ call POST /api/login "{\"username\":\"LIN$SUF\",\"password\":\"hunter2\"}"
 check "大写用户名也能登录 200" "200" "$(status)"
 
 echo
+echo "---- 登录失败锁定 (按账号) ----"
+# 5 次错密码锁 15 分钟; 锁的是"账号", 不误伤别人, 也不泄露账号存不存在。
+# 15 分钟没法等, 用 Redis 删掉计数模拟到期 (inline 协议, 不依赖 redis-cli)。
+USER_L="lock$SUF"
+call POST /api/register "{\"username\":\"$USER_L\",\"password\":\"hunter2\"}"
+check "注册锁定测试账号 200" "200" "$(status)"
+
+i=1
+while [ "$i" -le 5 ]; do
+    call POST /api/login "{\"username\":\"$USER_L\",\"password\":\"wrong$i\"}"
+    check "第 $i 次错密码 401" "401" "$(status)"
+    i=$((i + 1))
+done
+
+call POST /api/login "{\"username\":\"$USER_L\",\"password\":\"hunter2\"}"
+check "第 6 次密码对也拒绝 (锁定中) 429" "429" "$(status)"
+
+call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "锁定只针对该账号, 别的账号不受影响 200" "200" "$(status)"
+
+exec 9<>/dev/tcp/"$RHOST"/"$RPORT"
+printf 'DEL login_fail:%s\r\n' "$USER_L" >&9
+DEL_REPLY=$(timeout 3 head -c 4 <&9 | tr -d '\r\n')
+exec 9<&- 9>&-
+check "从 Redis 删掉失败计数 (模拟 15 分钟到期)" ":1" "$DEL_REPLY"
+
+call POST /api/login "{\"username\":\"$USER_L\",\"password\":\"hunter2\"}"
+check "解锁后能正常登录 200" "200" "$(status)"
+
+echo
 echo "---- 会话 ----"
 call GET /api/me '' "$TOKEN_A"
 check "带 token 取自己 200" "200" "$(status)"
@@ -340,9 +371,25 @@ jpid() { # true|false
 }
 
 call GET /api/ice
-check "ICE 配置 200" "200" "$(status)"
+check "未登录拿 ICE 配置 401" "401" "$(status)"
+
+call GET /api/ice '' "$TOKEN_A"
+check "登录后拿 ICE 配置 200" "200" "$(status)"
 contains "返回了 iceServers" "$(body)" '"iceServers"'
-contains "默认带一个 STUN" "$(body)" '"urls"'
+contains "默认带一个 STUN" "$(body)" 'stun:'
+# 测试服务里配了 TURN_URL=turn:coturn:3478 (见 compose 的 test 服务),
+# 所以每条响应都应该现场签发一条 TURN 临时凭证
+contains "下发 TURN 服务器" "$(body)" '"urls":"turn:coturn:3478"'
+TURN_USER=$(jstr username)
+case "$TURN_USER" in
+    [0-9]*:*) echo "ok   - TURN 用户名是 过期时间戳:账号 的形式 ($TURN_USER)" ;;
+    *)        echo "FAIL - TURN 用户名格式不对: [$TURN_USER]"; fail=1 ;;
+esac
+TURN_CRED=$(jstr credential)
+case "$TURN_CRED" in
+    ''|[!A-Za-z0-9+/=]*) echo "FAIL - TURN 凭证不是非空 base64: [$TURN_CRED]"; fail=1 ;;
+    *) echo "ok   - TURN 凭证是 base64 形式" ;;
+esac
 
 call POST /api/rooms/enter '{}' "$TOKEN_A"
 ROOM=$(jstr room)
@@ -609,7 +656,8 @@ echo "---- 多实例: 两个后端进程共享同一份 Redis ----"
 # (房间里的人、信令收件箱、序号全在 Redis), 却要能互相看到、互相发信令。
 # 状态要是还在进程内存里, 下面每一条都会失败。
 PORT2=$((PORT + 1))
-./video_server --port "$PORT2" --workers 2 --web "$WEB" \
+# 第二台故意不带 TURN 环境变量: 顺带验证"没配 TURN 就不下发 turn: 条目"的分支
+env -u TURN_URL -u TURN_SECRET ./video_server --port "$PORT2" --workers 2 --web "$WEB" \
     --db "$TEST_DB" --redis "$TEST_REDIS" >>"$LOG" 2>&1 &
 PID2=$!
 sleep 0.8
@@ -628,6 +676,12 @@ INST1=$(body | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
 CALL_PORT=$PORT2 call GET /api/health
 INST2=$(body | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
 check "两个端口是同一台机器上的两个实例" "$INST1" "$INST2"
+
+# 没配 TURN 的实例: 只有静态 STUN, 不该有 turn: 条目
+CALL_PORT=$PORT2 call GET /api/ice '' "$TOKEN_A"
+check "没配 TURN 的实例照样能拿 ICE 配置 200" "200" "$(status)"
+contains "同样有 iceServers" "$(body)" '"iceServers"'
+lacks "没配 TURN 就不下发 turn: 条目" "$(body)" '"turn:'
 
 # E 在 1 号实例开房间, F 从 2 号实例进同一个房间
 call POST /api/rooms/enter '{}' "$TOKEN_E"

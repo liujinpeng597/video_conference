@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,7 +31,9 @@
 #include "json.h"
 #include "presence.h"
 #include "random.h"
+#include "redis.h"
 #include "server.h"
+#include "turncred.h"
 
 namespace {
 
@@ -49,6 +52,12 @@ std::string g_webRoot = "../video_client";
 // 交给浏览器的 ICE 服务器列表, 原样是一段 JSON 数组文本。
 // 部署时通过环境变量 ICE_SERVERS 覆盖 (见 README)。
 std::string g_iceServers = R"([{"urls":"stun:stun.l.google.com:19302"}])";
+
+// TURN 的 REST 临时凭证配置。TURN_URL / TURN_SECRET 都配了才启用 (见 README)。
+// setTurnConfig() 在 start() 之前写一次, 之后所有请求只读。
+std::string g_turnUrl;
+std::string g_turnSecret;
+long long g_turnTtl = 12 * 60 * 60;  // 临时凭证有效期, 默认 12 小时
 
 // 这台实例的名字 (容器里就是 hostname)。多实例部署时用来确认负载均衡真的在分发,
 // /api/health 会带上它。
@@ -136,6 +145,7 @@ const char* statusText(int code) {
         case 405: return "Method Not Allowed";
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
+        case 429: return "Too Many Requests";
         case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
@@ -341,15 +351,66 @@ Resp apiRegister(const Request& req) {
     return fromAuthResult(auth::registerUser(name, pass, remember));
 }
 
+// ------------------------------------------------------------------ 登录失败锁定
+// 按账号数失败次数, 5 次错密码锁 15 分钟。和 nginx 那层的按 IP 限流互补:
+// 这层挡"换着 IP 撞同一个账号", 那层挡"换着账号撞"。
+// 计数放 Redis (多实例共享); Redis 出错时放行不锁 —— 限流是保险丝,
+// 不能因为缓存不可用把所有人挡在门外 (和房间功能的降级思路一致)。
+constexpr long long kLoginMaxFails = 5;
+constexpr long long kLoginLockSecs = 15 * 60;
+
+std::string loginFailKey(const std::string& name) {
+    // 用户名大小写不敏感 (注册时 LIN 会撞 lin), 计数也按小写归一
+    return "login_fail:" + lower(name);
+}
+
+// 该账号是否处于锁定期。Redis 连不上就当没锁, 记一行日志。
+bool loginLocked(const std::string& name) {
+    std::string v;
+    std::string err;
+    if (!redis::get(loginFailKey(name), &v, &err)) {
+        if (!err.empty()) std::fprintf(stderr, "[api] 读登录失败计数出错, 本次放行: %s\n", err.c_str());
+        return false;
+    }
+    return std::strtoll(v.c_str(), nullptr, 10) >= kLoginMaxFails;
+}
+
+// 记一次失败。每次失败都续期: 一直撞就一直锁着, 停手 15 分钟自动解锁。
+void noteLoginFail(const std::string& name) {
+    std::string err;
+    long long n = 0;
+    if (!redis::incr(loginFailKey(name), &n, &err)) {
+        if (!err.empty()) std::fprintf(stderr, "[api] 记登录失败次数出错: %s\n", err.c_str());
+        return;
+    }
+    redis::expire(loginFailKey(name), kLoginLockSecs, &err);
+}
+
+void clearLoginFails(const std::string& name) {
+    std::string err;
+    redis::del(loginFailKey(name), &err);
+}
+
 Resp apiLogin(const Request& req) {
     std::string name;
     std::string pass;
     if (!json::getString(req.body, "username", &name) || !json::getString(req.body, "password", &pass)) {
         return errJson(400, "请求体里要有 username 和 password 两个字符串字段");
     }
+    // 锁定检查放在密码校验之前: 锁定期连 Argon2 都不跑 —— 每次校验固定吃 64MB 内存,
+    // 不限住的话一个脚本就能把进程内存打满。
+    if (loginLocked(name)) {
+        return errJson(429, "尝试的次数太多了，请 15 分钟后再试");
+    }
     bool remember = false;
     json::getBool(req.body, "remember", &remember);
-    return fromAuthResult(auth::login(name, pass, remember));
+    const auth::Result r = auth::login(name, pass, remember);
+    if (r.status == auth::Status::BadCreds) {
+        noteLoginFail(name);
+    } else if (r.status == auth::Status::Ok) {
+        clearLoginFails(name);
+    }
+    return fromAuthResult(r);
 }
 
 // 用"保持登录"的长期令牌换一个新的短期会话。前端开新标签页时走这条路。
@@ -535,9 +596,36 @@ Resp apiRoomsSignal(const Request& req) {
     }
 }
 
-Resp apiIce() {
+Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
-    return okJson("{\"iceServers\":" + g_iceServers + "}");
+    // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string servers = g_iceServers;
+    if (!g_turnUrl.empty() && !g_turnSecret.empty()) {
+        // TURN REST: 用户名是 "过期时间戳:账号", 口令是按同样字符串算的 HMAC-SHA1。
+        // coturn 用同一份共享密钥校对口令, 过期自动失效, 静态口令不用进前端。
+        const long long expiry = (long long)std::time(nullptr) + g_turnTtl;
+        const std::string turnUser = std::to_string(expiry) + ":" + user;
+        const std::string entry = "{\"urls\":" + json::quote(g_turnUrl) +
+                                  ",\"username\":" + json::quote(turnUser) +
+                                  ",\"credential\":" + json::quote(turncred::credential(g_turnSecret, turnUser)) + "}";
+
+        // 把条目插在数组结尾。g_iceServers 经 setIceServers 校验过, 一定是 "[...]"。
+        bool empty = true;
+        for (char ch : servers) {
+            if (ch != '[' && ch != ']' && !std::isspace((unsigned char)ch)) { empty = false; break; }
+        }
+        if (empty) {
+            servers = "[" + entry + "]";
+        } else {
+            const size_t close = servers.rfind(']');
+            servers = servers.substr(0, close) + "," + entry + "]";
+        }
+    }
+    return okJson("{\"iceServers\":" + servers + "}");
 }
 
 Resp apiRoomsLeave(const Request& req) {
@@ -592,7 +680,7 @@ Resp routeApi(const Request& req) {
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");
-        return apiIce();
+        return apiIce(req);
     }
     if (req.path == "/api/rooms/leave") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
@@ -698,6 +786,12 @@ void setIceServers(const std::string& jsonArray) {
     } else {
         std::fprintf(stderr, "[srv] ICE_SERVERS 不是 JSON 数组, 忽略: %s\n", jsonArray.c_str());
     }
+}
+
+void setTurnConfig(const std::string& url, const std::string& secret, long long ttlSeconds) {
+    g_turnUrl = url;
+    g_turnSecret = secret;
+    if (ttlSeconds > 0) g_turnTtl = ttlSeconds;
 }
 
 void onConnect(Connection& c) {

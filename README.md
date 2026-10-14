@@ -45,9 +45,13 @@ docker compose up -d --build
 |---|---|
 | `video_server/` | C++17 后端：epoll + 线程池 + HTTP/1.1 + WebRTC 信令。**[README](video_server/README.md)** |
 | `video_client/` | Vue 3 前端，没有构建步骤。**[README](video_client/README.md)** |
-| `nginx/` | 入口层配置（静态文件 + 负载均衡） |
-| `docker-compose.yml` | 整套编排 |
-| `.env` | 本机配置：数据库口令 + 镜像站（`.env.example` 是模板） |
+| `nginx/` | 入口层（静态 + 反代 + 限流；HTTPS 与证书说明见其 README） |
+| `coturn/` | TURN 中继镜像的构建（用 Ubuntu 包，理由见 Dockerfile） |
+| `docker-compose.yml` | 整套编排（含 coturn 中继） |
+| `docker-compose.prod.yml` | 生产覆盖：HTTPS + 80/443 入口 |
+| `.env` | 本机配置：数据库口令 / TURN 密钥 + 镜像站（`.env.example` 是模板） |
+| `ops/` | 备份 / 恢复演练脚本（策略与 RPO/RTO 见其 README） |
+| `DEPLOY.md` | 上线手册：VPS 加固 / 证书 / 备份 cron / 升级回滚 |
 
 ## 现在能做什么
 
@@ -58,21 +62,21 @@ docker compose up -d --build
 - 麦克风 / 摄像头开关、屏幕上的本地预览、邀请链接
 - 弱网自愈：切网自动 ICE 重启，协商卡住的连接由看门狗自动重建重试
 - 三个后端实例 + nginx 轮询，杀掉一台不影响服务
+- 登录 / 注册按 IP 限流 + 按账号失败锁定（防爆破）
 
 **还不能：**
 
 - **4-6 人以上**：mesh 下每个人要给其他每个人发一路，上行是 (N-1) 倍。要更多人得换 SFU。
 - 屏幕共享、聊天、举手、录制、虚拟背景
-- 跨网络通话需要 TURN（代码已经把 ICE 配置做成可配的，但 coturn 要自己部署）
-- TLS：现在是明文 HTTP，上生产要在 nginx 那层加证书
-- 限流：没有，可以无限次试密码
+- 跨网络通话需要一台有公网地址的 TURN：compose 已内置 coturn，部署时把 `TURN_URL` 指过去即可；本机 / 局域网用不到
+- TLS：开发默认明文 HTTP；`docker-compose.prod.yml` 一键开 HTTPS（证书怎么来见 `nginx/README.md`）
 
 详细缺口在两个子目录的 README 里都列了。
 
 ## 跑测试
 
 ```bash
-docker compose run --rm test --build
+docker compose run --build --rm test
 ```
 
 覆盖后端全链路（含两个独立进程共享 Redis 的互通测试、50 条并发信令的顺序断言）。前端那侧的音视频通路由

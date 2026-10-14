@@ -53,6 +53,9 @@ cd video_server && make && ./video_server --port 9000 --web ../video_client \
 | `DATABASE_URL` | 同 `--db`，`--db` 优先 |
 | `REDIS_URL` | 同 `--redis`，`--redis` 优先；形如 `redis://[:密码@]主机:端口[/库号]` |
 | `ICE_SERVERS` | 交给浏览器的 ICE 服务器列表，一段 JSON 数组文本，见「信令和媒体」 |
+| `TURN_URL` | TURN 地址（如 `turn:公网IP:3478`）；与 `TURN_SECRET` 一起配好才启用 |
+| `TURN_SECRET` | 与 coturn 共享的密钥，用于签发临时凭证（见「信令和媒体」） |
+| `TURN_TTL_SECONDS` | 临时凭证有效期，默认 `43200`（12 小时） |
 
 ## 结构
 
@@ -159,7 +162,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | GET | `/api/rooms/state?since=N` | - | 成员列表 + 我的信令收件箱（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
-| GET | `/api/ice` | - | `{"iceServers":[…]}`，给浏览器建连接用 |
+| GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
 - 房间号留空就自动分配一个 `xxx-xxx-xxx`（小写字母，去掉 `i/l/o`，因为要靠嘴念）。
 - `participants` 每项是 `{"id","name","me"}`。`id` 是**房间内的信令地址**，随机生成，
@@ -174,6 +177,8 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；
   404 / 405 / 413 / 431 各自对应。静态资源路径走字符白名单，`..` 一律拒绝。
+- 登录失败按账号计次：5 次错密码锁 15 分钟（计数在 Redis，多实例共享；
+  Redis 不可用时放行不锁——限流是保险丝，不是单点）。
 
 ## 信令和媒体
 
@@ -197,11 +202,17 @@ A --POST /api/rooms/signal--> [B 的收件箱] --GET /api/rooms/state--> B
 服务器只转发信令。代价是每个人要给其他每个人发一路，上行是 (N-1) 倍，
 所以房间人数上限现在是 **6**（`kMaxRoomPeers`）。想开更多人得换 SFU。
 
-ICE 服务器列表从环境变量 `ICE_SERVERS` 读，通过 `/api/ice` 发给浏览器：
+ICE 服务器列表从环境变量 `ICE_SERVERS` 读，通过 `/api/ice` 发给浏览器（需要登录）：
 
 ```bash
-ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]'
+ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
 ```
+
+**TURN 用临时凭证（TURN REST）**：compose 里带了 coturn（`coturn/`），只要配好
+`TURN_URL` + `TURN_SECRET`，`/api/ice` 就会给每个登录用户现场签发一条 TURN 条目：
+用户名是 `过期时间戳:账号`，口令是 `base64(HMAC-SHA1(共享密钥, 用户名))`——coturn 那边
+用 `--use-auth-secret` 按同一公式校验。静态口令不用进前端，泄露的凭证最多活到时间戳
+过期（默认 12 小时）。签名实现和 RFC 2202 测试向量在 `src/turncred.*` 与 `test/turncred_test.cpp`。
 
 默认只有一个公共 STUN。**局域网自用够了，但对外提供服务时 TURN 是必需项**：
 对称 NAT 和企业网下大概一到两成的连接直连建不起来，没有 TURN 的现象是"有些人就是连不上"。
@@ -279,11 +290,12 @@ docker compose run --rm test      # 推荐: 复用编译阶段镜像, 不用在�
 或者在已经装好依赖的机器上：
 
 ```bash
-make test          # json.* 单测
+make test          # 单测 (json.* 与 turncred.*)
 bash test/smoke.sh # 全链路 (需要能连的 PostgreSQL 和 Redis, 见文件头)
 ```
 
-`smoke.sh` 覆盖：编译、JSON 单测、注册/登录/会话、保持登录与续期、令牌吊销、
+`smoke.sh` 覆盖：编译、单测（json / TURN 凭证）、注册/登录/会话（含失败锁定）、
+ICE/TURN 临时凭证签发、保持登录与续期、令牌吊销、
 房间进出与人数、房间号规整、信令搬运与权限（同房间校验、payload 原样透传、
 序号去重、超长拒绝、并发顺序原子化）、路由与错误码、静态资源与路径穿越、大文件整包送达、
 **多实例互通（两个独立进程共享 Redis：互相看得到房间、信令双向可达、人数上限跨实例生效）**、
@@ -298,20 +310,21 @@ bash test/smoke.sh # 全链路 (需要能连的 PostgreSQL 和 Redis, 见文件�
 
 ## 已知缺口 / 下一步
 
-- **仍然没有 TLS。** 密码是 Argon2id 了，但传输还是明文 HTTP。上 nginx 时在那一层终止 TLS。
-- **TURN 没部署。** 代码已经把 ICE 配置做成可配的（`ICE_SERVERS`），但 coturn 本身要单独起。
-  局域网自用可以先不管，对外必须加。
+- TLS 由入口层 nginx 终止（`docker-compose.prod.yml` + `nginx/README.md`）；后端自身仍然是
+  明文 HTTP，所以生产上不要绕过 nginx 直接暴露 9000。
+- TURN 已内建：compose 里跑 coturn，后端签发 12 小时临时凭证。对外部署时把 `TURN_URL`
+  指到公网地址即可；本机和局域网直连就够了。
 - **mesh 只能撑到 4-6 人。** 每个人都给其他每个人发一路，上行带宽是 (N-1) 倍。
   要开更多人得换 SFU（mediasoup / LiveKit / Janus），那是另一个量级的项目，
   媒体转发、simulcast、拥塞控制都得自己来或者接现成的。
-- **没有登录限流**，可以无限次试密码。要做就在 `users` 上记失败次数 + 临时锁定，或按 IP 限速。
+- 登录限流有两层：nginx 按 IP（见 `nginx/snippets/ratelimit-zones.conf`）+ 后端按账号失败锁定。
 - 会话是固定过期，不滑动续期。前端已经在 401 时自动用长期令牌换新的，所以体感上不会中途被踢。
 - 信令消息是**尽力投递**：Redis 挂了就全丢，客户端那一路协商会停在半路。
   前端已经处理了这种情况（发现房间没了就退回大厅并提示重进）；协商卡在半路的连接会被看门狗
   自动重建重试（最多 3 次），仍然失败才需要重进房间。
 - 每个参会者一块 RTCPeerConnection，没有做带宽自适应（bitrate 由浏览器自己拥塞控制决定），
   也没有 simulcast。
-- **没有限流**，也没有 IP 黑名单。当前最该补的安全缺口。
+- 没有 IP 黑名单 / WAF / DDoS 防护；对外部署时建议前置 Cloudflare 之类的服务。
 - `json.*` 只认扁平对象里的字符串/布尔字段，不是通用 JSON 库。
   （信令 payload 不需要解析，所以现在够用；真需要嵌套解析时换 nlohmann/json。）
 - 只监 IPv4；`Server::listenOn` 里有注释说明怎么改双栈。

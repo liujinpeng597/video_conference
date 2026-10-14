@@ -20,7 +20,7 @@ jobs:
   test:
     name: 全链路测试
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +31,10 @@ jobs:
       # 和本地同一条命令。db/redis 由 compose 起, smoke 会等它们健康后再跑。
       - name: 构建并跑 smoke 全链路
         run: docker compose run --build --rm test
+
+      # 生产形态: 自签证书 + 80/443 + TLS + 限流, 一条链路整验
+      - name: 生产形态 TLS 冒烟
+        run: bash ops/smoke-tls.sh
 
   image:
     name: 构建运行镜像

@@ -6,7 +6,18 @@
 **/*.d
 video_server/video_server
 video_server/json_test
+video_server/turncred_test
 
 # 杂项
 .DS_Store
 Thumbs.db
+
+# TLS 证书 (本地生成, 不进版本库; 生成方式见 nginx/README.md)
+nginx/certs/
+
+# 证书签发用的 webroot 与 certbot 工作目录 (见 DEPLOY.md)
+nginx/acme-webroot/
+nginx/letsencrypt/
+
+# 数据库备份 (pg_dump 产物; 备份脚本见 ops/)
+backups/

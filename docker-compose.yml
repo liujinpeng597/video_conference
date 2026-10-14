@@ -64,6 +64,46 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # TURN 中继: 对称 NAT / 企业网下直连建不起来时的兜底 (约一到两成用户需要)。
+  # 后端按 TURN REST 规范签发临时凭证 (见 handlers.cpp 的 apiIce), 不用固定用户名密码。
+  # 本机开发时它就是闲着的; 对外部署时把 TURN_URL 指到这台机器的公网地址即可。
+  # 注意: 中继端口只开了 41 个, 并发通话量大了要跟着调大。
+  coturn:
+    build:
+      context: ./coturn
+    command:
+      - "-n"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET:?没设置 TURN_SECRET, 先 cp .env.example .env 并填一个密码}"
+      - "--realm=video-conference"
+      - "--fingerprint"
+      - "--no-tls"
+      - "--no-dtls"
+      - "--no-multicast-peers"
+      # 拒绝把中继打到私有地址段/回环, 防止被当成内网跳板 (局域网内通话走直连, 不受影响)
+      - "--denied-peer-ip=127.0.0.0-127.255.255.255"
+      - "--denied-peer-ip=10.0.0.0-10.255.255.255"
+      - "--denied-peer-ip=172.16.0.0-172.31.255.255"
+      - "--denied-peer-ip=192.168.0.0-192.168.255.255"
+      - "--listening-port=3478"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--pidfile=/tmp/turnserver.pid"
+      - "--log-file=stdout"
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49200:49160-49200/udp"
+    healthcheck:
+      # STUN 绑定能通 = 中继真的在监听 (镜像里自带 turnutils_stunclient)
+      test: ["CMD", "turnutils_stunclient", "-p", "3478", "127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
   app:
     build:
       context: .
@@ -71,6 +111,11 @@ services:
     environment:
       DATABASE_URL: postgresql://video:${POSTGRES_PASSWORD:?没设置 POSTGRES_PASSWORD, 先 cp .env.example .env 并填一个密码}@db:5432/video_conference
       REDIS_URL: redis://redis:6379
+      # TURN: TURN_URL 留空 = 不下发 TURN (本机/局域网够用);
+      # 对外部署时填 turn:<公网 IP 或域名>:3478, 后端按用户签发 12 小时临时凭证
+      TURN_SECRET: ${TURN_SECRET:?没设置 TURN_SECRET, 先 cp .env.example .env 并填一个密码}
+      TURN_URL: ${TURN_URL:-}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-}
       # 交给浏览器的 ICE 服务器列表。默认只有一个公共 STUN, 本机和局域网够用;
       # 对外提供服务时把 TURN 加进来 (见 video_server/README.md「信令和媒体」):
       # ICE_SERVERS: '[{"urls":"stun:stun.example.com:3478"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]'
@@ -100,6 +145,7 @@ services:
       - "9000:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
       - ./video_client:/usr/share/nginx/html:ro
     depends_on:
       - app
@@ -118,13 +164,43 @@ services:
     environment:
       TEST_DB: postgresql://video:${POSTGRES_PASSWORD:?没设置 POSTGRES_PASSWORD, 先 cp .env.example .env 并填一个密码}@db:5432/video_conference
       TEST_REDIS: redis://redis:6379
+      # TURN 断言用: 固定指向 compose 网络里的 coturn, 不取 .env 的 TURN_URL,
+      # 这样不管本机 .env 怎么配, 测试结果都可复现。
+      TURN_URL: turn:coturn:3478
+      TURN_SECRET: ${TURN_SECRET:?没设置 TURN_SECRET, 先 cp .env.example .env 并填一个密码}
     command: bash test/smoke.sh
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      coturn:
+        condition: service_healthy
     profiles: ["test"]
+
+  # 备份 / 恢复演练: 一次性任务, 不参与常态 up (它在 ops profile 里)。
+  #
+  #   docker compose run --rm backup                              # 备份一次 -> ./backups/
+  #   docker compose run --rm backup /ops/restore-drill.sh        # 恢复演练 (不动正在用的库)
+  #   docker compose run --rm backup /ops/restore.sh <备份文件>    # 恢复到新库, 再做切换
+  #
+  # 为什么不写宿主机脚本: pg_dump 的二进制输出经 PowerShell 管道会被文本编码弄坏;
+  # 放进容器直接写挂载卷, 在 Windows / Linux / CI 上结果一致。
+  # 备份策略 (RPO/RTO) 和定时任务示例见 ops/README.md。
+  backup:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["ops"]
+    entrypoint: ["/bin/sh"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?没设置 POSTGRES_PASSWORD, 先 cp .env.example .env 并填一个密码}
+    volumes:
+      - ./backups:/backups
+      - ./ops:/ops:ro
+    command: ["/ops/backup.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
 
 volumes:
   pgdata:

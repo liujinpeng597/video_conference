@@ -64,7 +64,10 @@
       try { data = JSON.parse(text); } catch (err) { data = null; }
     }
     if (!res.ok) {
-      const e = new Error((data && data.error) || ('请求失败 ' + res.status));
+      // 429 多来自 nginx 的限流 (响应没有 JSON 体), 给一句人话而不是"请求失败 429"
+      const msg = (data && data.error) ||
+        (res.status === 429 ? '请求太频繁，稍等一会儿再试' : ('请求失败 ' + res.status));
+      const e = new Error(msg);
       e.status = res.status;
       throw e;
     }
@@ -411,7 +414,7 @@
       // ICE 服务器列表放服务端, 这样改部署 (换自己的 STUN/TURN) 不用重发前端
       async loadIce() {
         try {
-          const r = await call('GET', '/api/ice');
+          const r = await this.authed('GET', '/api/ice');
           if (Array.isArray(r.iceServers)) this.iceServers = r.iceServers;
         } catch (err) {
           // 空的也能在本机 / 局域网连上 (走 host candidate), 所以不当成错误
