@@ -1,0 +1,61 @@
+# 持续集成: 每次 push / PR 都回答一个问题 —— "这套代码现在还能不能用"
+#
+#   test  : 用项目自己的测试入口 (和本地完全同一条命令):
+#           两阶段构建镜像 -> 容器里编译 -> smoke.sh 全部断言 (含多实例互通)
+#   image : 测试通过后, 构建运行镜像推到 ghcr, 以后部署就是 VPS 直接拉
+#           (只在 push 时做; PR 和手动触发不推)
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 全链路测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # 和本地同一条命令。db/redis 由 compose 起, smoke 会等它们健康后再跑。
+      - name: 构建并跑 smoke 全链路
+        run: docker compose run --build --rm test
+
+  image:
+    name: 构建运行镜像
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # main 分支推 :latest, 版本 tag (v0.1.0 这种) 就推同名镜像
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: video_server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
