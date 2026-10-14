@@ -1,0 +1,109 @@
+# 视频会议的部署编排。
+#
+#   docker compose up -d --build
+#     起来之后: PostgreSQL + Redis + 3 个后端实例 + nginx。
+#     浏览器开 http://127.0.0.1:9000 (走 nginx, 不是直连某一台后端)。
+#     反复刷新或请求 /api/health, 返回里的 instance 会在几台之间变。
+#
+#   docker compose run --rm test
+#     跑全链路测试 (复用编译阶段镜像, 本地不用装任何依赖)
+#
+#   docker compose up -d db redis
+#     只起中间件, 然后在 WSL 里跑本地编译的二进制:
+#       cd video_server && ./video_server --db ... --redis redis://127.0.0.1:6379
+#
+# 关于"多个服务器": 这里用同一台机器上的多个容器模拟。每个 app 容器是一个独立进程、
+# 独立的 TCP 端口、独立的内存, 互相之间只有 Redis 和 PostgreSQL 两条线。
+# 把它们换到三台真机器上, 除了连接串改成真实地址以外, 代码一行都不用动。
+
+services:
+  db:
+    # 拉不动 Docker Hub 的话, 在 .env 里把镜像名指到镜像站 (见 .env.example)
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: video
+      POSTGRES_PASSWORD: video
+      POSTGRES_DB: video_conference
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video -d video_conference"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 房间在线状态和信令收件箱放这里, 所以后端实例才是无状态的。
+  # 故意不开持久化: 这些数据本来就是易失的, Redis 挂了重建即可, 不需要 AOF/RDB。
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: video_server/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://video:video@db:5432/video_conference
+      REDIS_URL: redis://redis:6379
+      # 交给浏览器的 ICE 服务器列表。默认只有一个公共 STUN, 本机和局域网够用;
+      # 对外提供服务时把 TURN 加进来 (见 video_server/README.md「信令和媒体」):
+      # ICE_SERVERS: '[{"urls":"stun:stun.example.com:3478"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]'
+    # 刻意不发布端口: 唯一入口是 nginx, 这就是生产上的样子。
+    # 想单独进某一台看看: docker compose exec app bash
+    deploy:
+      replicas: 3
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # 这个接口会同时查 PostgreSQL 和 Redis, 所以它能真的说明这台能不能干活
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  # 入口层: 静态文件 + 反向代理。生产上这一层通常还会终止 TLS、挂 WAF。
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./video_client:/usr/share/nginx/html:ro
+    depends_on:
+      - app
+
+  # 测试服务: 直接复用编译阶段的镜像, 里面有编译器 / libpq-dev / libsodium-dev /
+  # libhiredis-dev 和源码, 所以本地什么都不用装也能跑测试。
+  # 测试用同一个库但用户名带时间戳, 可以反复跑。
+  test:
+    build:
+      context: .
+      dockerfile: video_server/Dockerfile
+      target: build
+    working_dir: /src/video_server
+    environment:
+      TEST_DB: postgresql://video:video@db:5432/video_conference
+      TEST_REDIS: redis://redis:6379
+    command: bash test/smoke.sh
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles: ["test"]
+
+volumes:
+  pgdata:

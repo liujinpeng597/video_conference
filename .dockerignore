@@ -1,0 +1,12 @@
+# 别把宿主机构建出来的产物带进镜像: 带上 .o 之后容器里的 make 会以为已经编译过,
+# 结果用了宿主机的目标文件。
+**/*.o
+**/*.d
+video_server/video_server
+video_server/json_test
+
+.git
+.gitignore
+.env
+docker-compose.yml
+**/*.md

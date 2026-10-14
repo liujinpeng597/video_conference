@@ -1,0 +1,734 @@
+// 客户端 API: 极简 HTTP/1.1 + JSON。
+//
+//   字节流 --parseRequest()--> Request --route()--> Resp --sendResp()--> 字节流
+//
+// 状态放在哪:
+//   账号和会话       -> PostgreSQL (db.* / auth.*)
+//   房间在线 + 信令   -> Redis      (presence.*)
+//   这个进程自己      -> 什么都不存
+//
+// 这个进程是完全无状态的, 所以可以起任意多份放在负载均衡后面, 任意一份挂了都不影响
+// 正在开会的房间。这也是这套代码能从"单机 demo"变成"多实例"的关键改动。
+//
+// 还没有: WebSocket、SDP/ICE 之外的媒体转发 (见 README「信令和媒体」)。
+#include "handlers.h"
+
+#include <unistd.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "auth.h"
+#include "db.h"
+#include "json.h"
+#include "presence.h"
+#include "random.h"
+#include "server.h"
+
+namespace {
+
+// -------------------------------------------------------------------- 常量
+constexpr size_t kMaxHead = 16 * 1024;  // 请求行 + 头
+constexpr size_t kMaxBody = 64 * 1024;  // 请求体 (现在的接口都是小 JSON)
+constexpr size_t kMaxFileBytes = 8u << 20;
+
+// 信令搬运的一些上限。SDP 一般 2-4KB, 给宽一点。
+constexpr size_t kMaxSignalPayload = 16 * 1024;
+constexpr size_t kMaxSignalKind = 16;
+
+// 静态资源根目录。setWebRoot() 在 start() 之前写一次, 之后只读, 不用加锁。
+std::string g_webRoot = "../video_client";
+
+// 交给浏览器的 ICE 服务器列表, 原样是一段 JSON 数组文本。
+// 部署时通过环境变量 ICE_SERVERS 覆盖 (见 README)。
+std::string g_iceServers = R"([{"urls":"stun:stun.l.google.com:19302"}])";
+
+// 这台实例的名字 (容器里就是 hostname)。多实例部署时用来确认负载均衡真的在分发,
+// /api/health 会带上它。
+std::string g_instance = "?";
+
+std::string randomRoomCode() {
+    // 去掉 i / l / o, 房间号是要靠嘴念给别人的
+    static const char kAlpha[] = "abcdefghjkmnpqrstuvwxyz";
+    std::string s;
+    for (int g = 0; g < 3; ++g) {
+        if (g) s.push_back('-');
+        for (int i = 0; i < 3; ++i) s.push_back(kAlpha[rnd::below(23)]);
+    }
+    return s;
+}
+
+std::string lower(std::string s) {
+    for (char& ch : s) ch = (char)std::tolower((unsigned char)ch);
+    return s;
+}
+
+// 房间成员 -> 下发给前端的 JSON。
+// 注意 token 只留在服务端, 下发的只有 pid / 名字 / 是不是我。
+std::string peersJson(const std::vector<presence::Member>& members, const std::string& selfToken) {
+    std::string arr = "[";
+    bool first = true;
+    for (const presence::Member& m : members) {
+        if (!m.live) continue;  // 心跳断了的当不在
+        if (!first) arr += ',';
+        first = false;
+        arr += "{\"id\":";
+        arr += json::quote(m.pid);
+        arr += ",\"name\":";
+        arr += json::quote(m.user);
+        arr += ",\"me\":";
+        arr += (m.token == selfToken) ? "true" : "false";
+        arr += '}';
+    }
+    arr += ']';
+    return arr;
+}
+
+std::string normalizeRoom(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (char ch : raw) {
+        const unsigned char c = (unsigned char)ch;
+        if (c >= 'A' && c <= 'Z') {
+            out.push_back((char)(c - 'A' + 'a'));
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+            out.push_back((char)c);
+        } else {
+            return std::string();  // 有非法字符
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- HTTP 解析
+struct Request {
+    std::string method;
+    std::string path;
+    std::string query;  // path 里 '?' 后面那段, 原样
+    std::string body;
+    std::string token;  // Authorization: Bearer xxx
+    bool keepAlive = true;
+};
+
+struct Resp {
+    int code = 200;
+    std::string type = "application/json; charset=utf-8";
+    std::string body;
+};
+
+enum class Parse { Ok, NeedMore, Bad };
+
+const char* statusText(int code) {
+    switch (code) {
+        case 200: return "OK";
+        case 201: return "Created";
+        case 204: return "No Content";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 409: return "Conflict";
+        case 413: return "Payload Too Large";
+        case 431: return "Request Header Fields Too Large";
+        case 500: return "Internal Server Error";
+        case 503: return "Service Unavailable";
+        default: return "OK";
+    }
+}
+
+// 从 buf 头部切出一个完整请求, 切掉的部分从 buf 里 erase。
+// 不完整 -> NeedMore; 格式错 -> Bad, *err 是建议的状态码。
+Parse parseRequest(std::string& buf, Request* req, int* err) {
+    *err = 400;
+    const size_t headEnd = buf.find("\r\n\r\n");
+    if (headEnd == std::string::npos) {
+        if (buf.size() > kMaxHead) {
+            *err = 431;
+            return Parse::Bad;
+        }
+        return Parse::NeedMore;
+    }
+    if (headEnd > kMaxHead) {
+        *err = 431;
+        return Parse::Bad;
+    }
+
+    const size_t lineEnd = buf.find("\r\n");
+    if (lineEnd == std::string::npos || lineEnd > headEnd) return Parse::Bad;
+
+    // 请求行: METHOD SP TARGET SP HTTP/1.1
+    const std::string line = buf.substr(0, lineEnd);
+    const size_t sp1 = line.find(' ');
+    const size_t sp2 = line.rfind(' ');
+    if (sp1 == std::string::npos || sp2 == sp1) return Parse::Bad;
+    req->method = line.substr(0, sp1);
+    const std::string target = line.substr(sp1 + 1, sp2 - sp1 - 1);
+    if (line.compare(sp2 + 1, 5, "HTTP/") != 0) return Parse::Bad;
+
+    // 头
+    size_t contentLength = 0;
+    size_t p = lineEnd + 2;
+    while (p < headEnd) {
+        const size_t e = buf.find("\r\n", p);
+        if (e == std::string::npos || e > headEnd) break;
+        const std::string h = buf.substr(p, e - p);
+        p = e + 2;
+        const size_t colon = h.find(':');
+        if (colon == std::string::npos) continue;
+        const std::string k = lower(h.substr(0, colon));
+        std::string v = h.substr(colon + 1);
+        const size_t a = v.find_first_not_of(" \t");
+        const size_t b = v.find_last_not_of(" \t");
+        v = (a == std::string::npos) ? std::string() : v.substr(a, b - a + 1);
+
+        if (k == "content-length") {
+            contentLength = (size_t)std::strtoul(v.c_str(), nullptr, 10);
+        } else if (k == "authorization") {
+            if (v.size() > 7 && lower(v.substr(0, 7)) == "bearer ") req->token = v.substr(7);
+        } else if (k == "connection") {
+            if (lower(v).find("close") != std::string::npos) req->keepAlive = false;
+        }
+    }
+    if (contentLength > kMaxBody) {
+        *err = 413;
+        return Parse::Bad;
+    }
+
+    const size_t total = headEnd + 4 + contentLength;
+    if (buf.size() < total) return Parse::NeedMore;
+
+    const size_t q = target.find('?');
+    req->path = (q == std::string::npos) ? target : target.substr(0, q);
+    req->query = (q == std::string::npos) ? std::string() : target.substr(q + 1);
+    req->body.assign(buf, headEnd + 4, contentLength);
+    buf.erase(0, total);
+    return Parse::Ok;
+}
+
+// 从 query 里取一个非负整数, 没有或者不合法就返回 def。
+// 只认 key=<十进制数字>, 别的形式一律当没有。
+long long queryInt(const std::string& query, const char* key, long long def) {
+    const std::string k = std::string(key) + "=";
+    size_t p = 0;
+    while (p < query.size()) {
+        const size_t amp = query.find('&', p);
+        const std::string item = query.substr(p, (amp == std::string::npos ? query.size() : amp) - p);
+        if (item.compare(0, k.size(), k) == 0) {
+            const std::string v = item.substr(k.size());
+            if (v.empty() || v.size() > 18) return def;
+            for (char ch : v) {
+                if (ch < '0' || ch > '9') return def;
+            }
+            return std::strtoll(v.c_str(), nullptr, 10);
+        }
+        if (amp == std::string::npos) break;
+        p = amp + 1;
+    }
+    return def;
+}
+
+void sendResp(Connection& c, const Resp& r, bool keepAlive) {
+    std::string out;
+    out.reserve(256 + r.body.size());
+    out += "HTTP/1.1 ";
+    out += std::to_string(r.code);
+    out += ' ';
+    out += statusText(r.code);
+    out += "\r\nContent-Type: ";
+    out += r.type;
+    out += "\r\nContent-Length: ";
+    out += std::to_string(r.body.size());
+    out += keepAlive ? "\r\nConnection: keep-alive" : "\r\nConnection: close";
+    // 前端以后可能从别的端口 (比如 vite) 打开, CORS 开着不碍事
+    out += "\r\nAccess-Control-Allow-Origin: *";
+    out += "\r\nAccess-Control-Allow-Headers: Content-Type, Authorization";
+    out += "\r\nAccess-Control-Max-Age: 600";
+    out += "\r\nCache-Control: no-store";
+    out += "\r\n\r\n";
+    out += r.body;
+    c.send(out);
+}
+
+// 回包并请求关闭。如果 send() 没把 out 写干净 (对端慢 / 包大), 不能立刻 close,
+// 否则缓冲里剩下的字节会直接丢 —— 交给 onWritable 写完再关。
+void respondAndClose(Connection& c, const Resp& r) {
+    sendResp(c, r, false);
+    if (c.out.empty()) {
+        c.close();
+    } else {
+        c.closeAfterFlush = true;
+    }
+}
+
+Resp okJson(std::string body) {
+    Resp r;
+    r.code = 200;
+    r.body = std::move(body);
+    return r;
+}
+
+Resp errJson(int code, const std::string& msg) {
+    Resp r;
+    r.code = code;
+    r.body = "{\"error\":" + json::quote(msg) + "}";
+    return r;
+}
+
+Resp errText(int code, const std::string& msg) {
+    Resp r;
+    r.code = code;
+    r.type = "text/plain; charset=utf-8";
+    r.body = msg + "\n";
+    return r;
+}
+
+// ------------------------------------------------------------------ 鉴权
+// 会话令牌每次请求都要查一次库。查得动就说明令牌有效、没过期, 顺手也确认了库还活着。
+bool requireAuth(const Request& req, std::string* user, Resp* fail) {
+    std::string err;
+    switch (auth::whoAmI(req.token, user, &err)) {
+        case auth::Check::Ok:
+            return true;
+        case auth::Check::Error:
+            std::fprintf(stderr, "[api] 查会话失败: %s\n", err.c_str());
+            *fail = errJson(500, "服务端查会话失败");
+            return false;
+        case auth::Check::BadToken:
+        default:
+            *fail = errJson(401, "登录状态失效了，重新登录一下");
+            return false;
+    }
+}
+
+// auth::Result -> HTTP 响应
+Resp fromAuthResult(const auth::Result& r) {
+    if (r.status != auth::Status::Ok) {
+        switch (r.status) {
+            case auth::Status::BadRequest: return errJson(400, r.error);
+            case auth::Status::Taken: return errJson(409, r.error);
+            case auth::Status::BadCreds: return errJson(401, r.error);
+            default: return errJson(500, r.error.empty() ? "服务端出错" : r.error);
+        }
+    }
+    std::string body = "{\"token\":";
+    body += json::quote(r.token);
+    body += ",\"user\":";
+    body += json::quote(r.username);
+    if (!r.rememberToken.empty()) {
+        body += ",\"remember_token\":";
+        body += json::quote(r.rememberToken);
+    }
+    body += '}';
+    return okJson(std::move(body));
+}
+
+// ------------------------------------------------------------------ 接口实现
+Resp apiRegister(const Request& req) {
+    std::string name;
+    std::string pass;
+    if (!json::getString(req.body, "username", &name) || !json::getString(req.body, "password", &pass)) {
+        return errJson(400, "请求体里要有 username 和 password 两个字符串字段");
+    }
+    bool remember = false;
+    json::getBool(req.body, "remember", &remember);
+    return fromAuthResult(auth::registerUser(name, pass, remember));
+}
+
+Resp apiLogin(const Request& req) {
+    std::string name;
+    std::string pass;
+    if (!json::getString(req.body, "username", &name) || !json::getString(req.body, "password", &pass)) {
+        return errJson(400, "请求体里要有 username 和 password 两个字符串字段");
+    }
+    bool remember = false;
+    json::getBool(req.body, "remember", &remember);
+    return fromAuthResult(auth::login(name, pass, remember));
+}
+
+// 用"保持登录"的长期令牌换一个新的短期会话。前端开新标签页时走这条路。
+Resp apiSessionResume(const Request& req) {
+    std::string rememberToken;
+    if (!json::getString(req.body, "remember_token", &rememberToken)) {
+        return errJson(400, "请求体里要有 remember_token");
+    }
+    return fromAuthResult(auth::resume(rememberToken));
+}
+
+Resp apiLogout(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string rememberToken;
+    json::getString(req.body, "remember_token", &rememberToken);
+
+    // 退出登录就别留在房间里了。失败不影响登出, 记一行日志就行
+    // (房间 key 有 TTL, 就算这次没清掉, 一分钟以后也会自己消失)。
+    std::string leaveErr;
+    if (!presence::leave(req.token, &leaveErr)) {
+        std::fprintf(stderr, "[api] 退出登录时清房间失败: %s\n", leaveErr.c_str());
+    }
+
+    std::string err;
+    if (auth::logout(req.token, rememberToken, &err) == auth::Check::Error) {
+        std::fprintf(stderr, "[api] 退出登录删令牌失败: %s\n", err.c_str());
+        return errJson(500, "服务端清理会话失败");
+    }
+    return okJson("{\"ok\":true}");
+}
+
+Resp apiMe(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+    return okJson("{\"user\":" + json::quote(user) + "}");
+}
+
+// 这台实例的名字 (容器里就是 hostname)。多实例部署时用它确认负载均衡真的在分发。
+const std::string& instanceName() {
+    static const std::string name = [] {
+        char buf[128] = {0};
+        if (::gethostname(buf, sizeof buf - 1) != 0) return std::string("unknown");
+        buf[sizeof buf - 1] = '\0';
+        return std::string(buf);
+    }();
+    return name;
+}
+
+Resp apiHealth() {
+    long long users = -1;
+    std::string err;
+    if (!db::countUsers(&users, &err)) {
+        return okJson("{\"ok\":false,\"error\":\"数据库连不上\"}");
+    }
+    long long rooms = 0;
+    if (!presence::activeRooms(&rooms, &err)) {
+        return okJson("{\"ok\":false,\"error\":\"Redis 连不上\"}");
+    }
+    // instance 是给多实例部署排查用的: 反复请求这个接口, instance 应该会变
+    return okJson("{\"ok\":true,\"users\":" + std::to_string(users) +
+                  ",\"rooms\":" + std::to_string(rooms) +
+                  ",\"instance\":" + json::quote(instanceName()) + "}");
+}
+
+Resp apiRoomsEnter(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string raw;
+    const bool asked = json::getString(req.body, "room", &raw) && !raw.empty();
+
+    std::string err;
+    if (asked) {
+        raw = normalizeRoom(raw);
+        if (raw.size() < 3 || raw.size() > 40) {
+            return errJson(400, "房间号只能用字母、数字和连字符，长度 3-40");
+        }
+    } else {
+        // 房间在 Redis 里带 TTL, 空房间会自己消失, 所以这里只要问"这个号码现在活着吗"。
+        // 两台后端同时分配出同一个号码的窗口极小, 而且真撞上了也只是两个人进了同一个房间,
+        // 不是数据损坏, 所以不为了它上分布式锁。
+        for (int i = 0; i < 8 && raw.empty(); ++i) {
+            const std::string cand = randomRoomCode();
+            bool live = false;
+            if (!presence::roomLive(cand, &live, &err)) return errJson(500, "查房间失败：" + err);
+            if (!live) raw = cand;
+        }
+        if (raw.empty()) return errJson(503, "分配不到空闲房间号，过会儿再试");
+    }
+
+    std::string pid;
+    std::vector<presence::Member> members;
+    switch (presence::enter(req.token, user, raw, &pid, &members, &err)) {
+        case presence::Enter::Ok:
+            break;
+        case presence::Enter::Full:
+            return errJson(409, "房间满了");
+        default:
+            return errJson(500, "进房间失败：" + err);
+    }
+    return okJson("{\"room\":" + json::quote(raw) +
+                  ",\"participants\":" + peersJson(members, req.token) + "}");
+}
+
+// 房间同步: 一次请求拿回"成员列表 + 我的信令收件箱"。
+// 合成一个接口是为了让前端只用一条轮询循环: 协商期间 400ms 一拍, 连上以后退回 2 秒。
+Resp apiRoomsState(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    const uint64_t since = (uint64_t)queryInt(req.query, "since", 0);
+
+    std::string room;
+    std::vector<presence::Member> members;
+    std::vector<presence::Signal> msgs;
+    std::string err;
+    if (!presence::sync(req.token, since, &room, &members, &msgs, &err)) {
+        return errJson(500, "同步房间状态失败：" + err);
+    }
+
+    // seq 只推进到"这一拍真的发出去的消息"为止, 不能用全局最大值:
+    // 万一有一条 seq 更小的消息是在这次读取之后才写进信箱的, 用全局最大值就会把它永久跳过。
+    uint64_t seq = since;
+    std::string arr = "[";
+    bool first = true;
+    for (const presence::Signal& s : msgs) {
+        if (!first) arr += ',';
+        first = false;
+        if (s.seq > seq) seq = s.seq;
+        arr += "{\"seq\":";
+        arr += std::to_string(s.seq);
+        arr += ",\"from\":";
+        arr += json::quote(s.from);
+        arr += ",\"kind\":";
+        arr += json::quote(s.kind);
+        arr += ",\"payload\":";
+        arr += s.payload;  // 客户端发来的原始 JSON 片段, 原样转回
+        arr += '}';
+    }
+    arr += ']';
+
+    return okJson("{\"room\":" + json::quote(room) +
+                  ",\"participants\":" + peersJson(members, req.token) +
+                  ",\"seq\":" + std::to_string(seq) +
+                  ",\"messages\":" + arr + "}");
+}
+
+// 把一条信令放进目标参会者的收件箱。
+// 服务器不看 payload 内容 (SDP / ICE candidate 都不用懂), 只做"同房间内"这个权限检查。
+Resp apiRoomsSignal(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string to;
+    std::string kind;
+    if (!json::getString(req.body, "to", &to) || !json::getString(req.body, "kind", &kind)) {
+        return errJson(400, "请求体里要有 to 和 kind");
+    }
+    if (to.empty() || to.size() > 64) return errJson(400, "to 不合法");
+    if (kind.empty() || kind.size() > kMaxSignalKind) return errJson(400, "kind 不合法");
+
+    std::string payload;
+    if (!json::getRaw(req.body, "payload", &payload)) return errJson(400, "请求体里要有 payload");
+    if (payload.size() > kMaxSignalPayload) return errJson(413, "信令内容太大了");
+
+    std::string err;
+    switch (presence::send(req.token, to, kind, payload, &err)) {
+        case presence::Send::Delivered:
+            return okJson("{\"ok\":true,\"delivered\":true}");
+        case presence::Send::NoSuchPeer:
+            return okJson("{\"ok\":true,\"delivered\":false}");
+        case presence::Send::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "转发信令失败：" + err);
+    }
+}
+
+Resp apiIce() {
+    // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
+    return okJson("{\"iceServers\":" + g_iceServers + "}");
+}
+
+Resp apiRoomsLeave(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string err;
+    if (!presence::leave(req.token, &err)) return errJson(500, "离开房间失败：" + err);
+    return okJson("{\"ok\":true}");
+}
+
+Resp routeApi(const Request& req) {
+    const bool isPost = req.method == "POST";
+    const bool isGet = req.method == "GET";
+
+    if (req.path == "/api/health") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiHealth();
+    }
+    if (req.path == "/api/register") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRegister(req);
+    }
+    if (req.path == "/api/login") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiLogin(req);
+    }
+    if (req.path == "/api/session/resume") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiSessionResume(req);
+    }
+    if (req.path == "/api/logout") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiLogout(req);
+    }
+    if (req.path == "/api/me") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiMe(req);
+    }
+    if (req.path == "/api/rooms/enter") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsEnter(req);
+    }
+    if (req.path == "/api/rooms/state") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiRoomsState(req);
+    }
+    if (req.path == "/api/rooms/signal") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsSignal(req);
+    }
+    if (req.path == "/api/ice") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiIce();
+    }
+    if (req.path == "/api/rooms/leave") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsLeave(req);
+    }
+    return errJson(404, "没有这个接口");
+}
+
+// ---------------------------------------------------------------- 静态资源
+const char* mimeOf(const std::string& path) {
+    const size_t dot = path.rfind('.');
+    const std::string ext = (dot == std::string::npos) ? std::string() : lower(path.substr(dot));
+    if (ext == ".html") return "text/html; charset=utf-8";
+    if (ext == ".css") return "text/css; charset=utf-8";
+    if (ext == ".js") return "text/javascript; charset=utf-8";
+    if (ext == ".json") return "application/json; charset=utf-8";
+    if (ext == ".svg") return "image/svg+xml";
+    if (ext == ".png") return "image/png";
+    if (ext == ".webp") return "image/webp";
+    if (ext == ".ico") return "image/x-icon";
+    if (ext == ".woff2") return "font/woff2";
+    return "application/octet-stream";
+}
+
+// 只放行白名单字符的路径。这样根本不存在 ../ 穿越的可能, 不用再做规范化。
+bool resolveStatic(const std::string& url, std::string* out) {
+    if (url.empty() || url[0] != '/') return false;
+    const size_t q = url.find('?');
+    std::string p = (q == std::string::npos) ? url : url.substr(0, q);
+    if (p == "/") p = "/index.html";
+    if (p.size() > 128) return false;
+    for (char ch : p) {
+        const unsigned char c = (unsigned char)ch;
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                        ch == '/' || ch == '.' || ch == '-' || ch == '_';
+        if (!ok) return false;
+    }
+    if (p.find("..") != std::string::npos) return false;
+    *out = g_webRoot + p;
+    return true;
+}
+
+bool readWholeFile(const std::string& path, std::string* out) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    out->clear();
+    char buf[64 * 1024];
+    size_t n = 0;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) {
+        out->append(buf, n);
+        if (out->size() > kMaxFileBytes) break;
+    }
+    const bool ok = std::ferror(f) == 0;
+    std::fclose(f);
+    return ok;
+}
+
+Resp serveStatic(const std::string& url) {
+    std::string file;
+    if (!resolveStatic(url, &file)) return errText(400, "路径不合法");
+    std::string body;
+    if (!readWholeFile(file, &body)) return errText(404, "没有这个文件");
+    Resp r;
+    r.code = 200;
+    r.type = mimeOf(file);
+    r.body = std::move(body);
+    return r;
+}
+
+// -------------------------------------------------------------------- 分发
+void route(Connection& c, const Request& req) {
+    const bool isApi = req.path.rfind("/api/", 0) == 0;
+
+    Resp r;
+    if (req.method == "OPTIONS") {
+        r.code = 204;  // 预检
+    } else if (isApi) {
+        r = routeApi(req);
+    } else if (req.method == "GET") {
+        r = serveStatic(req.path);
+    } else {
+        r = errText(405, "静态资源只支持 GET");
+    }
+
+    if (isApi && req.method != "OPTIONS") {
+        std::fprintf(stderr, "[api] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
+    } else if (!isApi && r.code != 200 && r.code != 204) {
+        std::fprintf(stderr, "[web] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
+    }
+
+    sendResp(c, r, req.keepAlive);
+}
+
+}  // namespace
+
+// ------------------------------------------------------------------ 对外回调
+void setWebRoot(const std::string& dir) { g_webRoot = dir; }
+
+void setIceServers(const std::string& jsonArray) {
+    // 只做最粗的检查: 必须是个非空数组。内容原样交给浏览器, 服务端不解析。
+    if (jsonArray.size() >= 2 && jsonArray.front() == '[' && jsonArray.back() == ']') {
+        g_iceServers = jsonArray;
+    } else {
+        std::fprintf(stderr, "[srv] ICE_SERVERS 不是 JSON 数组, 忽略: %s\n", jsonArray.c_str());
+    }
+}
+
+void onConnect(Connection& c) {
+    std::fprintf(stderr, "[conn] + %s fd=%d\n", c.peer.c_str(), c.fd);
+}
+
+void onMessage(Connection& c, const char* data, size_t len) {
+    c.in.append(data, len);
+    for (;;) {
+        Request req;
+        int err = 400;
+        const Parse p = parseRequest(c.in, &req, &err);
+        if (p == Parse::NeedMore) return;
+        if (p == Parse::Bad) {
+            respondAndClose(c, errJson(err, "请求格式不对"));
+            return;
+        }
+        route(c, req);
+        if (c.closed) return;
+        if (!req.keepAlive) {
+            if (c.out.empty()) {
+                c.close();
+            } else {
+                c.closeAfterFlush = true;  // 还有没写完的, 让 onWritable 收尾
+            }
+            return;
+        }
+    }
+}
+
+void onClose(Connection& c) {
+    // 房间在线状态靠心跳超时回收 (kPresenceTtlMs) + 定期清扫, 这里不用特意做什么
+    std::fprintf(stderr, "[conn] - %s\n", c.peer.c_str());
+}

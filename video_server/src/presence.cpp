@@ -1,0 +1,234 @@
+#include "presence.h"
+
+#include <chrono>
+#include <cstdlib>
+
+#include "random.h"
+#include "redis.h"
+
+namespace presence {
+namespace {
+
+// 这么久没心跳就不算在房间里了。
+// 为什么是 30s 而不是更小: 稳定期 2s 一拍, 后台标签页会被浏览器节流, 弱网还会丢拍;
+// 7s 只容得下 3 拍, 一次抖动就把健康的连接判成离线、立刻拆掉。30s 能扛住这些,
+// 代价是崩掉的浏览器最多 30s 后才从名单里消失 (媒体层面 WebRTC 会更早报 failed)。
+constexpr int64_t kPresenceTtlMs = 30000;
+constexpr long long kKeyTtlSec = 60;      // room / session / mailbox 的 Redis TTL
+// mesh(两两直连)下每个人都要给其他每个人发一路, 上行是 (N-1) 倍, 6 人差不多到顶了
+constexpr size_t kMaxRoomPeers = 6;
+// 一次协商几十条消息就够了, 留 64 条是给"轮询丢了一拍重试"用的
+constexpr long long kMailboxMax = 64;
+constexpr char kSep = '\x1f';
+
+int64_t nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+std::string roomKey(const std::string& room) { return "room:" + room; }
+std::string sessionKey(const std::string& token) { return "session:" + token; }
+std::string mailboxKey(const std::string& token) { return "mailbox:" + token; }
+
+const char* kSeqKey = "signaling:seq";
+
+// 把 a/b/c 用 \x1f 拼起来
+std::string join3(const std::string& a, const std::string& b, const std::string& c) {
+    std::string s;
+    s.reserve(a.size() + b.size() + c.size() + 2);
+    s += a;
+    s.push_back(kSep);
+    s += b;
+    s.push_back(kSep);
+    s += c;
+    return s;
+}
+
+// 按前 n 个分隔符切开, 剩下的整段作为最后一项 (payload 里可能有任意内容)
+bool splitN(const std::string& s, int n, std::vector<std::string>* out) {
+    size_t pos = 0;
+    for (int i = 0; i < n; ++i) {
+        const size_t p = s.find(kSep, pos);
+        if (p == std::string::npos) return false;
+        out->push_back(s.substr(pos, p - pos));
+        pos = p + 1;
+    }
+    out->push_back(s.substr(pos));
+    return true;
+}
+
+Member parseMember(const std::string& token, const std::string& value, int64_t now) {
+    Member m;
+    m.token = token;
+    std::vector<std::string> parts;
+    if (!splitN(value, 2, &parts)) {
+        m.live = false;  // 字段坏了就当不在
+        return m;
+    }
+    m.pid = parts[0];
+    m.user = parts[1];
+    m.seenMs = std::strtoll(parts[2].c_str(), nullptr, 10);
+    m.live = (now - m.seenMs) <= kPresenceTtlMs;
+    return m;
+}
+
+}  // namespace
+
+bool whereAmI(const std::string& token, Me* me, std::string* err) {
+    me->room.clear();
+    me->pid.clear();
+    me->user.clear();
+
+    std::string v;
+    if (!redis::get(sessionKey(token), &v, err)) return false;  // err 空 = 不在房间
+
+    std::vector<std::string> parts;
+    if (!splitN(v, 2, &parts)) return false;
+    me->room = parts[0];
+    me->pid = parts[1];
+    me->user = parts[2];
+    return true;
+}
+
+bool roomLive(const std::string& room, bool* out, std::string* err) {
+    return redis::exists(roomKey(room), out, err);
+}
+
+Enter enter(const std::string& token, const std::string& user, const std::string& room,
+            std::string* pid, std::vector<Member>* members, std::string* err) {
+    const int64_t now = nowMs();
+
+    // 先看现在有谁: 成员列表要返回给前端, 顺便做人数上限检查
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(room), &fields, err)) return Enter::Error;
+
+    members->clear();
+    size_t live = 0;
+    bool alreadyHere = false;
+    for (const redis::Field& f : fields) {
+        Member m = parseMember(f.name, f.value, now);
+        if (m.live) ++live;
+        if (m.token == token) alreadyHere = true;
+        members->push_back(std::move(m));
+    }
+    // 已经在房间里的人重新进不算新增 (比如刷新页面后又点了加入)
+    if (!alreadyHere && live >= kMaxRoomPeers) return Enter::Full;
+
+    *pid = rnd::hex(6);  // 每次进房间换一个地址, 免得被人拿旧的乱发
+
+    if (!redis::hSet(roomKey(room), token, join3(*pid, user, std::to_string(now)), err)) {
+        return Enter::Error;
+    }
+    if (!redis::expire(roomKey(room), kKeyTtlSec, err)) return Enter::Error;
+    if (!redis::setEx(sessionKey(token), join3(room, *pid, user), kKeyTtlSec, err)) return Enter::Error;
+    // 换房间了, 把上一个房间留下的信令清掉
+    if (!redis::del(mailboxKey(token), err)) return Enter::Error;
+
+    // 上面的 HGETALL 是在写我之前跑的, 所以自己得补进去
+    bool patched = false;
+    for (Member& m : *members) {
+        if (m.token != token) continue;
+        m.pid = *pid;
+        m.user = user;
+        m.seenMs = now;
+        m.live = true;
+        patched = true;
+    }
+    if (!patched) {
+        Member me;
+        me.token = token;
+        me.pid = *pid;
+        me.user = user;
+        me.seenMs = now;
+        me.live = true;
+        members->push_back(std::move(me));
+    }
+    return Enter::Ok;
+}
+
+bool sync(const std::string& token, uint64_t since, std::string* room,
+          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* err) {
+    room->clear();
+    members->clear();
+    msgs->clear();
+
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty();  // 不在房间 = 正常情况
+    *room = me.room;
+
+    const int64_t now = nowMs();
+    // 心跳: 刷新自己的 seen, 顺便续上 key 的 TTL
+    if (!redis::hSet(roomKey(me.room), token, join3(me.pid, me.user, std::to_string(now)), err)) return false;
+    if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return false;
+    if (!redis::expire(sessionKey(token), kKeyTtlSec, err)) return false;
+
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return false;
+    for (const redis::Field& f : fields) members->push_back(parseMember(f.name, f.value, now));
+
+    std::vector<std::string> raw;
+    if (!redis::lRange(mailboxKey(token), &raw, err)) return false;
+    for (const std::string& item : raw) {
+        std::vector<std::string> parts;
+        if (!splitN(item, 3, &parts)) continue;
+        Signal s;
+        s.seq = std::strtoull(parts[0].c_str(), nullptr, 10);
+        if (s.seq <= since) continue;  // 客户端已经收过的
+        s.from = parts[1];
+        s.kind = parts[2];
+        s.payload = parts[3];
+        msgs->push_back(std::move(s));
+    }
+    return true;
+}
+
+Send send(const std::string& token, const std::string& toPid, const std::string& kind,
+          const std::string& payload, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Send::NotInRoom : Send::Error;
+
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return Send::Error;
+
+    // 只能发给同一个房间里还活着的人。不做这个检查, 任何登录用户都能往别人房间塞信令。
+    const int64_t now = nowMs();
+    std::string target;
+    for (const redis::Field& f : fields) {
+        Member m = parseMember(f.name, f.value, now);
+        if (m.pid == toPid && m.live) {
+            target = m.token;
+            break;
+        }
+    }
+    if (target.empty()) return Send::NoSuchPeer;
+
+    // 取号 + 入队 + 裁剪 + 续期必须原子完成 (redis::mailboxPush 里有完整解释):
+    // 分开跑的话, 并发下"序号小的条目后入队", 收件人的游标一旦越过就永久丢这条信令。
+    long long seq = 0;
+    if (!redis::mailboxPush(kSeqKey, mailboxKey(target), me.pid, kind, payload,
+                            std::string(1, kSep), kMailboxMax, kKeyTtlSec, &seq, err)) {
+        return Send::Error;
+    }
+    return Send::Delivered;
+}
+
+bool leave(const std::string& token, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty();  // 本来就不在, 当成成功
+
+    if (!redis::hDel(roomKey(me.room), token, err)) return false;
+    if (!redis::del(sessionKey(token), err)) return false;
+    if (!redis::del(mailboxKey(token), err)) return false;
+
+    // 房间空了就把 key 删掉, 不然 /api/health 的房间数会虚高 (反正也有 TTL 兜底)
+    long long n = 0;
+    std::string ignore;
+    if (redis::hLen(roomKey(me.room), &n, &ignore) && n == 0) redis::del(roomKey(me.room), &ignore);
+    return true;
+}
+
+bool activeRooms(long long* out, std::string* err) {
+    return redis::countKeys("room:*", 10000, out, err);
+}
+
+}  // namespace presence

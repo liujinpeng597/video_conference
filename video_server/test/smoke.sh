@@ -1,0 +1,702 @@
+#!/usr/bin/env bash
+# 全链路测试:
+#   编译 -> json 单测 -> 账号/会话 -> 保持登录 -> 房间 -> 信令(含并发顺序断言) -> 静态资源
+#   -> 多实例互通 (两个后端进程) -> 并发 -> 重启后数据还在 -> 优雅退出
+#
+# 需要能连上的 PostgreSQL 和 Redis。指定方式:
+#   TEST_DB=postgresql://user:pass@host:port/db \
+#   TEST_REDIS=redis://host:port bash test/smoke.sh
+# 默认值是本机 55432 / 56379 端口上的临时容器; 连不上的话, 只要有 docker
+# 就自动拉临时容器起来 (用完删掉)。
+#
+# 测试用的用户名都带随机后缀, 所以可以对同一个库反复执行。
+set -u
+cd "$(dirname "$0")/.."
+
+PORT=${PORT:-9100}
+LOG=${LOG:-/tmp/video_server_smoke.log}
+WEB=${WEB:-../video_client}
+BASE="http://127.0.0.1:$PORT"
+
+TEST_DB=${TEST_DB:-postgresql://video:video@127.0.0.1:55432/video_test}
+PG_IMAGE=${POSTGRES_IMAGE:-postgres:17-alpine}
+PG_NAME=video_server_smoke_pg
+PG_PORT=55432
+
+TEST_REDIS=${TEST_REDIS:-redis://127.0.0.1:56379}
+REDIS_IMAGE=${REDIS_IMAGE:-redis:7-alpine}
+REDIS_NAME=video_server_smoke_redis
+REDIS_PORT=56379
+
+fail=0
+STARTED_PG=0
+STARTED_REDIS=0
+PID=""
+PID2=""
+cleanup() {
+    [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null
+    [ -n "$PID2" ] && kill -9 "$PID2" 2>/dev/null
+    [ "$STARTED_PG" = 1 ] && docker rm -f "$PG_NAME" >/dev/null 2>&1
+    [ "$STARTED_REDIS" = 1 ] && docker rm -f "$REDIS_NAME" >/dev/null 2>&1
+    return 0
+}
+trap cleanup EXIT
+
+check() { # 名称 期望 实际
+    if [ "$2" = "$3" ]; then
+        echo "ok   - $1"
+    else
+        echo "FAIL - $1: 期望 [$2] 实际 [$3]"
+        fail=1
+    fi
+}
+contains() { # 名称 文本 片段
+    case "$2" in
+        *"$3"*) echo "ok   - $1" ;;
+        *) echo "FAIL - $1: 没找到 [$3]"; fail=1 ;;
+    esac
+}
+lacks() { # 名称 文本 不该有的片段
+    case "$2" in
+        *"$3"*) echo "FAIL - $1: 不该出现 [$3]"; fail=1 ;;
+        *) echo "ok   - $1" ;;
+    esac
+}
+
+# ---------------------------------------------------------------- 数据库
+DB_HOST=$(printf '%s' "$TEST_DB" | sed -n 's#.*@\([^:/]*\).*#\1#p')
+DB_PORT=$(printf '%s' "$TEST_DB" | sed -n 's#.*@[^:]*:\([0-9]\{1,\}\).*#\1#p')
+DB_HOST=${DB_HOST:-127.0.0.1}
+DB_PORT=${DB_PORT:-5432}
+
+db_reachable() { (exec 3<>/dev/tcp/"$DB_HOST"/"$DB_PORT") 2>/dev/null; }
+
+if db_reachable; then
+    echo "数据库: $TEST_DB"
+elif command -v docker >/dev/null 2>&1; then
+    echo "连不上 $TEST_DB, 拉一个临时数据库容器 ($PG_IMAGE)"
+    docker rm -f "$PG_NAME" >/dev/null 2>&1
+    if ! docker run -d --rm --name "$PG_NAME" \
+            -e POSTGRES_USER=video -e POSTGRES_PASSWORD=video -e POSTGRES_DB=video_test \
+            -p "$PG_PORT":5432 "$PG_IMAGE" >/dev/null; then
+        echo "临时数据库起不来 (镜像拉不动? 试试 POSTGRES_IMAGE=<镜像站>/library/postgres:17-alpine)"
+        exit 1
+    fi
+    STARTED_PG=1
+    for _ in $(seq 1 60); do
+        docker exec "$PG_NAME" pg_isready -U video -d video_test >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    if ! db_reachable; then
+        echo "临时数据库没就绪"
+        exit 1
+    fi
+echo "临时数据库就绪: $TEST_DB"
+else
+    echo "连不上 $TEST_DB, 也没有 docker。先起库:  docker compose up -d db redis"
+    echo "或者指定外部库:  TEST_DB=postgresql://... bash test/smoke.sh"
+    exit 1
+fi
+
+# ---------------------------------------------------------------- Redis
+RHOST=$(printf '%s' "$TEST_REDIS" | sed -n 's#^redis://\([^:/]*\).*#\1#p')
+RPORT=$(printf '%s' "$TEST_REDIS" | sed -n 's#^redis://[^:]*:\([0-9]\{1,\}\).*#\1#p')
+RHOST=${RHOST:-127.0.0.1}
+RPORT=${RPORT:-6379}
+
+redis_reachable() { (exec 3<>/dev/tcp/"$RHOST"/"$RPORT") 2>/dev/null; }
+
+if redis_reachable; then
+    echo "Redis : $TEST_REDIS"
+elif command -v docker >/dev/null 2>&1; then
+    echo "连不上 $TEST_REDIS, 拉一个临时 Redis 容器 ($REDIS_IMAGE)"
+    docker rm -f "$REDIS_NAME" >/dev/null 2>&1
+    if ! docker run -d --rm --name "$REDIS_NAME" -p "$REDIS_PORT":6379 "$REDIS_IMAGE" \
+            redis-server --save '' --appendonly no >/dev/null; then
+        echo "临时 Redis 起不来 (镜像拉不动? 试试 REDIS_IMAGE=<镜像站>/library/redis:7-alpine)"
+        exit 1
+    fi
+    STARTED_REDIS=1
+    for _ in $(seq 1 40); do
+        docker exec "$REDIS_NAME" redis-cli ping >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    if ! redis_reachable; then
+        echo "临时 Redis 没就绪"
+        exit 1
+    fi
+    echo "临时 Redis 就绪: $TEST_REDIS"
+else
+    echo "连不上 $TEST_REDIS, 也没有 docker。先起:  docker compose up -d db redis"
+    exit 1
+fi
+
+# ---------------------------------------------------------------- 编译
+make -s || { echo "编译失败"; exit 1; }
+make -s test || { echo "json 单测失败"; exit 1; }
+
+rm -f "$LOG"
+start_server() { # [端口] [日志里的进程名]
+    local port=${1:-$PORT}
+    ./video_server --port "$port" --workers 2 --web "$WEB" \
+        --db "$TEST_DB" --redis "$TEST_REDIS" >>"$LOG" 2>&1 &
+    PID=$!
+    sleep 0.7
+    if ! kill -0 "$PID" 2>/dev/null; then
+        echo "服务端($port)起不来, 日志:"
+        tail -n 20 "$LOG"
+        exit 1
+    fi
+}
+start_server
+
+# 每次跑用不同的用户名, 这样同一个库可以反复测
+SUF=$RANDOM$RANDOM
+USER_A="lin$SUF"
+USER_B="mei$SUF"
+USER_C="zhao$SUF"
+USER_D="qian$SUF"
+USER_E="sun$SUF"
+USER_F="zhou$SUF"
+USER_G="wu$SUF"
+
+# 用 bash 自带的 /dev/tcp 发请求, 不依赖 curl。
+# Connection: close 让服务端回完就关, cat 才读得到 EOF。
+RESP=""
+CALL_PORT=""   # 临时指定请求打到哪个端口 (测多实例时用): CALL_PORT=9101 call ...
+call() { # method path [body] [token]
+    local method=$1 path=$2 payload=${3:-} token=${4:-}
+    local port=${CALL_PORT:-$PORT}
+    RESP=$(
+        exec 5<>/dev/tcp/127.0.0.1/"$port"
+        {
+            printf '%s %s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n' "$method" "$path"
+            if [ -n "$payload" ]; then
+                printf 'Content-Type: application/json\r\nContent-Length: %d\r\n' "${#payload}"
+            fi
+            if [ -n "$token" ]; then
+                printf 'Authorization: Bearer %s\r\n' "$token"
+            fi
+            printf '\r\n%s' "$payload"
+        } >&5
+        timeout 10 cat <&5
+        exec 5<&- 5>&-
+    ) || true
+}
+
+status() { printf '%s\n' "$RESP" | head -1 | tr -d '\r' | cut -d' ' -f2; }
+body() { printf '%s\n' "$RESP" | tr -d '\r' | sed -n '/^$/,$p' | tail -n +2; }
+jstr() { body | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | head -1; }
+jcount() { body | grep -o "\"$1\":" | wc -l | tr -d ' '; }
+
+echo
+echo "---- 健康检查 ----"
+call GET /api/health
+check "健康检查 200" "200" "$(status)"
+contains "健康检查里 ok 为真" "$(body)" '"ok":true'
+contains "健康检查带上了实例名 (多实例排查用)" "$(body)" '"instance"'
+
+echo
+echo "---- 注册 / 登录 ----"
+call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "注册 200" "200" "$(status)"
+TOKEN_A=$(jstr token)
+check "注册返回用户名" "$USER_A" "$(jstr user)"
+[ -n "$TOKEN_A" ] && echo "ok   - 拿到 token" || { echo "FAIL - 没拿到 token"; fail=1; }
+lacks "不勾保持登录就不发长期令牌" "$(body)" 'remember_token'
+
+call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"whatever\"}"
+check "重名注册 409" "409" "$(status)"
+
+call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "重名再试一次还是 409" "409" "$(status)"
+
+call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"123\"}"
+check "密码太短 400" "400" "$(status)"
+
+call POST /api/register '{"username":123,"password":"hunter2"}'
+check "username 不是字符串 400" "400" "$(status)"
+
+call POST /api/register '{"username":"a b c","password":"hunter2"}'
+check "用户名带空格 400" "400" "$(status)"
+
+call POST /api/register 'not json at all'
+check "请求体不是 JSON 400" "400" "$(status)"
+
+call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"wrong\"}"
+check "密码错 401" "401" "$(status)"
+
+call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "登录 200" "200" "$(status)"
+contains "登录返回 token" "$(body)" '"token":"'
+
+call POST /api/login '{"username":"nobody_at_all","password":"hunter2"}'
+check "不存在的用户也是 401 (不泄露用户名存不存在)" "401" "$(status)"
+
+call POST /api/register "{\"username\":\"LIN$SUF\",\"password\":\"hunter2\"}"
+check "用户名大小写不敏感 (LIN 撞 lin) 409" "409" "$(status)"
+
+call POST /api/login "{\"username\":\"LIN$SUF\",\"password\":\"hunter2\"}"
+check "大写用户名也能登录 200" "200" "$(status)"
+
+echo
+echo "---- 会话 ----"
+call GET /api/me '' "$TOKEN_A"
+check "带 token 取自己 200" "200" "$(status)"
+check "取回的用户名" "$USER_A" "$(jstr user)"
+
+call GET /api/me
+check "不带 token 401" "401" "$(status)"
+
+call GET /api/me '' "deadbeef"
+check "假 token 401" "401" "$(status)"
+
+echo
+echo "---- 保持登录 (长期令牌) ----"
+call POST /api/register "{\"username\":\"$USER_C\",\"password\":\"hunter2\",\"remember\":true}"
+check "注册时勾了保持登录 200" "200" "$(status)"
+REM_C=$(jstr remember_token)
+TOKEN_C=$(jstr token)
+[ -n "$REM_C" ] && echo "ok   - 拿到了 remember_token" || { echo "FAIL - 没有 remember_token"; fail=1; }
+
+call POST /api/session/resume "{\"remember_token\":\"$REM_C\"}"
+check "用长期令牌换新会话 200" "200" "$(status)"
+RESUMED=$(jstr token)
+check "换回来的是另一个会话令牌" "1" "$([ "$RESUMED" != "$TOKEN_C" ] && echo 1 || echo 0)"
+
+call GET /api/me '' "$RESUMED"
+check "换来的会话能用 200" "200" "$(status)"
+
+call POST /api/session/resume "{\"remember_token\":\"$REM_C\"}"
+check "长期令牌可以重复用 (别的标签页也要能换) 200" "200" "$(status)"
+
+call POST /api/session/resume '{"remember_token":"deadbeef"}'
+check "假长期令牌 401" "401" "$(status)"
+
+call POST /api/session/resume "{\"remember_token\":\"$RESUMED\"}"
+check "会话令牌不能当长期令牌用 401" "401" "$(status)"
+
+call POST /api/session/resume '{}'
+check "不给长期令牌 400" "400" "$(status)"
+
+call POST /api/logout "{\"remember_token\":\"$REM_C\"}" "$RESUMED"
+check "退出登录 200" "200" "$(status)"
+
+call POST /api/session/resume "{\"remember_token\":\"$REM_C\"}"
+check "退出后长期令牌被吊销 401" "401" "$(status)"
+
+call GET /api/me '' "$RESUMED"
+check "退出后会话令牌也失效 401" "401" "$(status)"
+
+echo
+echo "---- 房间 ----"
+call POST /api/rooms/enter '{}' "$TOKEN_A"
+check "进房间 200" "200" "$(status)"
+ROOM=$(jstr room)
+check "空房间号时自动分配" "1" "$(printf '%s' "$ROOM" | grep -c '^[a-z]\{3\}-[a-z]\{3\}-[a-z]\{3\}$')"
+check "房间里 1 个人" "1" "$(jcount name)"
+
+call POST /api/register "{\"username\":\"$USER_B\",\"password\":\"hunter2\"}"
+TOKEN_B=$(jstr token)
+[ -n "$TOKEN_B" ] && echo "ok   - 第二个账号拿到 token" || { echo "FAIL - 第二个账号没拿到 token"; fail=1; }
+
+call POST /api/rooms/enter "{\"room\":\"$ROOM\"}" "$TOKEN_B"
+check "第二个人进来 200" "200" "$(status)"
+check "进的是同一个房间" "$ROOM" "$(jstr room)"
+check "房间里 2 个人" "2" "$(jcount name)"
+contains "认得出自己" "$(body)" '"me":true'
+contains "也认得出别人" "$(body)" '"me":false'
+
+call GET /api/rooms/state '' "$TOKEN_A"
+check "轮询房间状态 200" "200" "$(status)"
+check "轮询看到 2 个人" "2" "$(jcount name)"
+
+call POST /api/rooms/leave '' "$TOKEN_B"
+check "离开房间 200" "200" "$(status)"
+
+call GET /api/rooms/state '' "$TOKEN_A"
+check "走了一个, 剩 1 个人" "1" "$(jcount name)"
+
+call GET /api/rooms/state
+check "没登录不能看房间状态 401" "401" "$(status)"
+
+echo
+echo "---- 房间号规整与拦截 ----"
+call POST /api/rooms/enter '{"room":"ABC-DEF-GHI"}' "$TOKEN_A"
+check "大写房间号被规整" "abc-def-ghi" "$(jstr room)"
+
+call POST /api/rooms/enter '{"room":"a b"}' "$TOKEN_A"
+check "房间号里有空格 400" "400" "$(status)"
+
+call POST /api/rooms/enter '{"room":"ab"}' "$TOKEN_A"
+check "房间号太短 400" "400" "$(status)"
+
+echo
+echo "---- 信令 (WebRTC 协商消息的搬运) ----"
+# 从 participants 里挑出自己和别人的 pid。服务端输出的顺序不保证, 所以按 me 标记找。
+jpid() { # true|false
+    body | grep -o "{\"id\":\"[^\"]*\",\"name\":\"[^\"]*\",\"me\":$1}" |
+        sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1
+}
+
+call GET /api/ice
+check "ICE 配置 200" "200" "$(status)"
+contains "返回了 iceServers" "$(body)" '"iceServers"'
+contains "默认带一个 STUN" "$(body)" '"urls"'
+
+call POST /api/rooms/enter '{}' "$TOKEN_A"
+ROOM=$(jstr room)
+PID_A=$(jpid true)
+[ -n "$PID_A" ] && echo "ok   - 从成员列表里拿到了自己的 id" || { echo "FAIL - 没有自己的 id"; fail=1; }
+
+call POST /api/rooms/enter "{\"room\":\"$ROOM\"}" "$TOKEN_B"
+# 注意: 进房间的响应是"收件人自己视角"的成员列表, 所以 B 自己的 id 是 me:true 那条,
+# me:false 那条是 A。用反了就会变成 A 给自己发信令。
+PID_B=$(jpid true)
+OTHER=$(jpid false)
+[ -n "$PID_B" ] && echo "ok   - 拿到了 B 自己的 id" || { echo "FAIL - 没有 B 的 id"; fail=1; }
+check "B 看到的另一个人就是 A" "$PID_A" "$OTHER"
+
+# A 给 B 发一条 offer。payload 故意做成嵌套结构, 验证服务器是原样搬运而不是解析重建。
+SDP='v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n'
+call POST /api/rooms/signal \
+    "{\"to\":\"$PID_B\",\"kind\":\"offer\",\"payload\":{\"description\":{\"type\":\"offer\",\"sdp\":\"$SDP\"},\"extra\":[1,2,{\"a\":\"b\"}]}}" \
+    "$TOKEN_A"
+check "发信令 200" "200" "$(status)"
+contains "对方在同一个房间, delivered 为真" "$(body)" '"delivered":true'
+
+call GET '/api/rooms/state?since=0' '' "$TOKEN_B"
+check "收件人取到 1 条" "1" "$(jcount from)"
+contains "SDP 原样带过来了" "$(body)" 'v=0'
+contains "嵌套的数组和对象没被弄坏" "$(body)" '"extra":[1,2,{"a":"b"}]'
+contains "知道是谁发的" "$(body)" "\"from\":\"$PID_A\""
+
+TOPSEQ=$(body | grep -o '"seq":[0-9]*' | head -1 | cut -d: -f2)
+call GET "/api/rooms/state?since=$TOPSEQ" '' "$TOKEN_B"
+check "确认过的信令不再重复下发" "0" "$(jcount from)"
+
+# 发给同一个房间里不存在的人: 不报错, 但也不投递
+call POST /api/rooms/signal '{"to":"nosuchpid","kind":"offer","payload":{}}' "$TOKEN_A"
+check "发给不存在的 pid 不报错" "200" "$(status)"
+contains "但是没投递" "$(body)" '"delivered":false'
+
+# 发给别的房间的人: 必须被拦住, 否则谁都能往别人房间塞信令
+call POST /api/register "{\"username\":\"$USER_D\",\"password\":\"hunter2\"}"
+TOKEN_D=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_D"
+PID_D=$(jpid true)
+call POST /api/rooms/signal "{\"to\":\"$PID_D\",\"kind\":\"offer\",\"payload\":{}}" "$TOKEN_A"
+check "不能给别的房间的人发信令" "1" "$(printf '%s' "$(body)" | grep -c '"delivered":false')"
+
+# 参数校验
+call POST /api/rooms/signal "{\"to\":\"$PID_B\",\"kind\":\"offer\"}" "$TOKEN_A"
+check "缺 payload 400" "400" "$(status)"
+
+call POST /api/rooms/signal "{\"to\":\"$PID_B\"}" "$TOKEN_A"
+check "缺 kind 400" "400" "$(status)"
+
+BIG=$(head -c 20000 /dev/zero | tr '\0' 'x')
+call POST /api/rooms/signal "{\"to\":\"$PID_B\",\"kind\":\"offer\",\"payload\":\"$BIG\"}" "$TOKEN_A"
+check "payload 太大 413" "413" "$(status)"
+
+call POST /api/rooms/leave '' "$TOKEN_A"
+call POST /api/rooms/signal "{\"to\":\"$PID_B\",\"kind\":\"offer\",\"payload\":{}}" "$TOKEN_A"
+check "不在房间里不能发信令 409" "409" "$(status)"
+
+echo
+echo "---- 并发信令的到达顺序 ----"
+# 两个发送者同时往同一个收件箱塞信令时, "取序号"和"入队"必须原子完成。
+# 分开跑的话, 并发下会出现"序号小的条目后入队": 收件人的 since 游标一旦越过,
+# 这条信令就被当成"已经收过"而永久跳过 —— 表现是某一路协商消息凭空消失。
+# 这里让两个人同时各发 25 条, 然后断言: 50 条一条不少, 且信箱里的 seq 严格递增。
+USER_R1="kui$SUF"
+USER_R2="lie$SUF"
+USER_R3="min$SUF"
+call POST /api/register "{\"username\":\"$USER_R1\",\"password\":\"hunter2\"}"
+TOKEN_R1=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_R2\",\"password\":\"hunter2\"}"
+TOKEN_R2=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_R3\",\"password\":\"hunter2\"}"
+TOKEN_R3=$(jstr token)
+
+call POST /api/rooms/enter '{}' "$TOKEN_R1"
+RACE_ROOM=$(jstr room)
+RACE_PID=$(jpid true)
+call POST /api/rooms/enter "{\"room\":\"$RACE_ROOM\"}" "$TOKEN_R2"
+call POST /api/rooms/enter "{\"room\":\"$RACE_ROOM\"}" "$TOKEN_R3"
+check "并发测试的三个人在同一个房间" "3" "$(jcount name)"
+
+race_send() { # token 标签: 发一条信令, HTTP 状态码写到 /tmp/vs_race_<标签>.code
+    exec 8<>/dev/tcp/127.0.0.1/"$PORT"
+    local P="{\"to\":\"$RACE_PID\",\"kind\":\"offer\",\"payload\":{\"n\":\"$2\"}}"
+    printf 'POST /api/rooms/signal HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' \
+        "$1" "${#P}" "$P" >&8
+    timeout 10 cat <&8 | head -1 | tr -d '\r' | cut -d' ' -f2 >"/tmp/vs_race_$2.code"
+    exec 8<&- 8>&-
+}
+
+rm -f /tmp/vs_race_*.code
+round=0
+while [ "$round" -lt 25 ]; do
+    race_send "$TOKEN_R2" "${round}a" &
+    pa=$!
+    race_send "$TOKEN_R3" "${round}b" &
+    pb=$!
+    wait "$pa" "$pb"
+    round=$((round + 1))
+done
+
+n_race_ok=0
+for f in /tmp/vs_race_*.code; do
+    [ "$(cat "$f" 2>/dev/null)" = "200" ] && n_race_ok=$((n_race_ok + 1))
+done
+check "50 条并发信令全部 200" "50" "$n_race_ok"
+rm -f /tmp/vs_race_*.code
+
+call GET '/api/rooms/state?since=0' '' "$TOKEN_R1"
+check "收件箱里 50 条一条不少" "50" "$(jcount from)"
+
+# 返回里第一个 seq 是服务端给的游标, 之后每条消息各有一个 seq, 按信箱顺序排列。
+race_seqs=$(body | grep -o '"seq":[0-9]*' | cut -d: -f2)
+race_msg_seqs=$(printf '%s\n' "$race_seqs" | tail -n +2)
+race_asc=1
+prev=0
+for s in $race_msg_seqs; do
+    if [ "$s" -le "$prev" ]; then race_asc=0; fi
+    prev=$s
+done
+check "50 条的 seq 严格递增 (不递增说明取号和入队没原子化, 会丢信令)" "1" "$race_asc"
+
+call GET "/api/rooms/state?since=$prev" '' "$TOKEN_R1"
+check "用最新游标再拉一次不重复下发" "0" "$(jcount from)"
+
+echo
+echo "---- 路由 ----"
+call GET /api/nope
+check "未知接口 404" "404" "$(status)"
+
+call DELETE /api/health
+check "错误方法 405" "405" "$(status)"
+
+echo
+echo "---- 静态资源 ----"
+call GET /
+check "首页 200" "200" "$(status)"
+contains "首页是前端页面" "$(body)" 'id="app"'
+contains "图标 sprite 已经塞进去了" "$(body)" 'id="ic-microphone"'
+
+call GET /app.css
+check "app.css 200" "200" "$(status)"
+contains "css 里有设计变量" "$(body)" '--brand'
+
+call GET /app.js
+check "app.js 200" "200" "$(status)"
+
+call GET /vendor/vue.global.prod.js
+check "本地 Vue 200" "200" "$(status)"
+
+call GET /nope.txt
+check "不存在的静态文件 404" "404" "$(status)"
+
+call GET /../src/main.cpp
+check "路径穿越 400" "400" "$(status)"
+
+call GET /%2e%2e/src/main.cpp
+check "编码过的路径穿越 400" "400" "$(status)"
+
+call POST /index.html
+check "静态资源只收 GET 405" "405" "$(status)"
+
+# 大文件必须整包送到。这条专门盯 "Connection: close" 那条路径:
+# 如果服务端回完就立刻 close, out 缓冲里没写完的字节会被丢掉, 下载就会莫名截断。
+if command -v curl >/dev/null 2>&1; then
+    want=$(wc -c <"$WEB/vendor/vue.global.prod.js")
+    got=$(curl -sS -H 'Connection: close' -o /tmp/vs_smoke_static.raw \
+               -w '%{size_download}' "$BASE/vendor/vue.global.prod.js" 2>/dev/null || echo -1)
+    check "大静态文件整包送达 ($want 字节)" "$want" "$got"
+    rm -f /tmp/vs_smoke_static.raw
+else
+    echo "skip - 没有 curl, 跳过整包校验"
+fi
+
+echo
+echo "---- 并发 ----"
+# 4 个请求同时抢同一个用户名: 唯一约束保证只有一个能成
+rm -f /tmp/vs_reg_*.code
+pids=""
+i=0
+while [ "$i" -lt 4 ]; do
+    (
+        exec 6<>/dev/tcp/127.0.0.1/"$PORT"
+        P="{\"username\":\"dup$SUF\",\"password\":\"hunter2\"}"
+        printf 'POST /api/register HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' "${#P}" "$P" >&6
+        timeout 10 cat <&6 | head -1 | tr -d '\r' | cut -d' ' -f2 >"/tmp/vs_reg_$i.code"
+        exec 6<&- 6>&-
+    ) &
+    pids="$pids $!"
+    i=$((i + 1))
+done
+for p in $pids; do wait "$p"; done
+
+n200=0
+n409=0
+for f in /tmp/vs_reg_*.code; do
+    case "$(cat "$f" 2>/dev/null)" in
+        200) n200=$((n200 + 1)) ;;
+        409) n409=$((n409 + 1)) ;;
+    esac
+done
+check "4 个并发注册只成功 1 个" "1" "$n200"
+check "另外 3 个都是 409" "3" "$n409"
+rm -f /tmp/vs_reg_*.code
+
+# 5 条并发健康检查
+rm -f /tmp/vs_smoke_c*.code
+pids=""
+i=0
+while [ "$i" -lt 5 ]; do
+    (
+        exec 7<>/dev/tcp/127.0.0.1/"$PORT"
+        printf 'GET /api/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n' >&7
+        timeout 10 cat <&7 | head -1 | tr -d '\r' | cut -d' ' -f2 >"/tmp/vs_smoke_c$i.code"
+        exec 7<&- 7>&-
+    ) &
+    pids="$pids $!"
+    i=$((i + 1))
+done
+for p in $pids; do wait "$p"; done
+ok=0
+i=0
+while [ "$i" -lt 5 ]; do
+    [ "$(cat "/tmp/vs_smoke_c$i.code" 2>/dev/null)" = "200" ] && ok=$((ok + 1))
+    i=$((i + 1))
+done
+check "5 条并发请求都 200" "5" "$ok"
+rm -f /tmp/vs_smoke_c*.code
+
+echo
+echo "---- 连接回收 ----"
+sleep 0.5
+opened=$(grep -c '^\[conn\] +' "$LOG")
+closed=$(grep -c '^\[conn\] -' "$LOG")
+check "建立/关闭数量一致" "$opened" "$closed"
+[ "$opened" -gt 10 ] && echo "ok   - 确实跑了不少连接 ($opened 条)" || { echo "FAIL - 连接数太少 ($opened)"; fail=1; }
+
+echo
+echo "---- 重启服务端后数据还在吗 ----"
+kill -TERM "$PID"
+wait "$PID"
+check "重启前 SIGTERM 退出码" "0" "$?"
+grep -q 'caught signal 15' "$LOG" && echo "ok   - signalfd 收到 SIGTERM" || { echo "FAIL - signalfd 没收到信号"; fail=1; }
+
+rm -f "$LOG"
+start_server
+
+call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "重启后老账号还能登录 (账号持久化)" "200" "$(status)"
+contains "重启后拿到新 token" "$(body)" '"token":"'
+
+call GET /api/me '' "$TOKEN_A"
+check "重启前发的会话令牌依然有效 (会话持久化)" "200" "$(status)"
+check "拿回来的还是同一个人" "$USER_A" "$(jstr user)"
+
+call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "重启后重名照样拦住" "409" "$(status)"
+
+echo
+echo "---- 多实例: 两个后端进程共享同一份 Redis ----"
+# 这一段是这次改动的核心验证。两个完全独立的服务进程, 各自内存里什么都没有
+# (房间里的人、信令收件箱、序号全在 Redis), 却要能互相看到、互相发信令。
+# 状态要是还在进程内存里, 下面每一条都会失败。
+PORT2=$((PORT + 1))
+./video_server --port "$PORT2" --workers 2 --web "$WEB" \
+    --db "$TEST_DB" --redis "$TEST_REDIS" >>"$LOG" 2>&1 &
+PID2=$!
+sleep 0.8
+kill -0 "$PID2" 2>/dev/null || { echo "FAIL - 第二台实例没起来"; fail=1; }
+
+call POST /api/register "{\"username\":\"$USER_E\",\"password\":\"hunter2\"}"
+TOKEN_E=$(jstr token)
+CALL_PORT=$PORT2 call POST /api/register "{\"username\":\"$USER_F\",\"password\":\"hunter2\"}"
+TOKEN_F=$(jstr token)
+[ -n "$TOKEN_E" ] && [ -n "$TOKEN_F" ] && echo "ok   - 两个账号分别在两台实例上注册成功" \
+    || { echo "FAIL - 注册失败"; fail=1; }
+
+# 两台实例各自报出自己的名字, 证明真的是两个进程
+call GET /api/health
+INST1=$(body | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
+CALL_PORT=$PORT2 call GET /api/health
+INST2=$(body | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
+check "两个端口是同一台机器上的两个实例" "$INST1" "$INST2"
+
+# E 在 1 号实例开房间, F 从 2 号实例进同一个房间
+call POST /api/rooms/enter '{}' "$TOKEN_E"
+check "E 在 1 号实例开房间" "200" "$(status)"
+ROOM=$(jstr room)
+PID_E=$(jpid true)
+
+CALL_PORT=$PORT2 call POST /api/rooms/enter "{\"room\":\"$ROOM\"}" "$TOKEN_F"
+check "F 在 2 号实例进同一个房间" "200" "$(status)"
+PID_F=$(jpid true)
+check "2 号实例上也看到 2 个人" "2" "$(jcount name)"
+
+call GET '/api/rooms/state?since=0' '' "$TOKEN_E"
+check "1 号实例能看到 2 号实例上的人" "2" "$(jcount name)"
+contains "认得出哪个是自己" "$(body)" '"me":true'
+
+# 信令跨实例来回走一遍
+CALL_PORT=$PORT2 call POST /api/rooms/signal \
+    "{\"to\":\"$PID_E\",\"kind\":\"offer\",\"payload\":{\"description\":{\"type\":\"offer\",\"sdp\":\"v=0\\r\\ncross\"}}}" \
+    "$TOKEN_F"
+contains "F(2 号) 发给 E(1 号) 投递成功" "$(body)" '"delivered":true'
+call GET '/api/rooms/state?since=0' '' "$TOKEN_E"
+check "E 在 1 号实例上收到了 2 号实例转来的信令" "1" "$(jcount from)"
+contains "内容没坏" "$(body)" 'cross'
+
+call POST /api/rooms/signal \
+    "{\"to\":\"$PID_F\",\"kind\":\"answer\",\"payload\":{\"description\":{\"type\":\"answer\",\"sdp\":\"v=0\\r\\nback\"}}}" \
+    "$TOKEN_E"
+CALL_PORT=$PORT2 call GET '/api/rooms/state?since=0' '' "$TOKEN_F"
+check "E(1 号) 发给 F(2 号) 也到了" "1" "$(jcount from)"
+
+# 人数上限在跨实例时也要管用
+call POST /api/register "{\"username\":\"$USER_G\",\"password\":\"hunter2\"}"
+TOKEN_G=$(jstr token)
+call POST /api/rooms/enter "{\"room\":\"$ROOM\"}" "$TOKEN_G"
+check "第三个人也能进来 (上限是 6)" "200" "$(status)"
+
+# 跨实例离开, 另一台要立刻看得到
+CALL_PORT=$PORT2 call POST /api/rooms/leave '' "$TOKEN_F"
+call GET /api/rooms/state '' "$TOKEN_E"
+check "2 号实例上的人走了, 1 号实例马上就知道" "2" "$(jcount name)"
+
+call POST /api/rooms/leave '' "$TOKEN_G"
+call POST /api/rooms/leave '' "$TOKEN_E"
+
+# 离开以后自己的会话里就不该再有房间了。用这个而不是"健康检查里 rooms 归零":
+# 前面几节还留着别的房间 (房间 key 有 TTL, 一会儿自己消失), 归零本来就不该成立。
+call GET /api/rooms/state '' "$TOKEN_E"
+contains "离开后自己的房间号清空了" "$(body)" '"room":""'
+check "离开后成员列表也是空的" "0" "$(jcount name)"
+CALL_PORT=$PORT2 call GET /api/rooms/state '' "$TOKEN_F"
+contains "从 2 号实例离开的人同样是空房间" "$(body)" '"room":""'
+
+kill -TERM "$PID2"
+wait "$PID2"
+check "第二台实例优雅退出" "0" "$?"
+PID2=""
+
+echo
+echo "---- 收尾 ----"
+kill -TERM "$PID"
+wait "$PID"
+check "最终 SIGTERM 退出码" "0" "$?"
+grep -q 'stopped' "$LOG" && echo "ok   - 正常关停" || { echo "FAIL - 没有关停日志"; fail=1; }
+PID=""
+
+echo
+echo "---- 服务端日志 (最后 25 行) ----"
+tail -n 25 "$LOG"
+echo
+[ "$fail" = 0 ] && echo "==== 全部通过 ====" || echo "==== 有失败 ===="
+exit "$fail"

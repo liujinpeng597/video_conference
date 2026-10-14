@@ -1,0 +1,3 @@
+# 统一行尾: 仓库里存 LF; 在 Windows 检出时也别把 .sh 弄成 CRLF (会跑不了)
+* text=auto
+*.sh text eol=lf

@@ -1,0 +1,12 @@
+# 生产环境会在这里放真实密码, 从第一个提交起就不进版本库
+.env
+
+# 本机编译产物 (Docker 构建不受影响)
+**/*.o
+**/*.d
+video_server/video_server
+video_server/json_test
+
+# 杂项
+.DS_Store
+Thumbs.db

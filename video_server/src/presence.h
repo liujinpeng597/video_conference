@@ -1,0 +1,76 @@
+// 房间在线状态 + 信令收件箱。
+//
+// 这两样东西以前放在进程内存里, 一加第二台后端就废了: A 的请求被负载均衡打到 2 号后端,
+// 就看 1 号后端里的房间表, 于是"时通时不通"。现在全部外置到 Redis, 每台后端都是无状态的,
+// 负载均衡可以随便轮询, 任意一台挂了也不影响正在开会的房间。
+//
+// Redis 里的 key:
+//   room:{房间号}      HASH    token -> "pid\x1fuser\x1fseenMs"   整个房间一个 TTL
+//   session:{令牌}     STRING  "room\x1fpid\x1fuser"              我在哪个房间
+//   mailbox:{令牌}     LIST    "seq\x1ffrom\x1fkind\x1fpayload"    待取走的信令, 只留最近 64 条
+//                      取号和入队在一个 Lua 脚本里原子完成 -> 信箱内 seq 严格递增
+//   signaling:seq      INCR    全局单调序号
+//
+// 为什么房间用 TTL 而不是自己做清理: 房间没人心跳了就该消失, 这正是 EXPIRE 的语义。
+// 自己写清理程序要处理"最后一个走的人崩了"这种情况, 而 TTL 天然处理。
+//
+// 分隔符用 \x1f (US): 用户名校验不允许控制字符, 信令 payload 是合法 JSON
+// (JSON 里的控制字符必须转义成 \u00XX 六个字符), 所以这个字节不会出现在字段值里。
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace presence {
+
+struct Member {
+    std::string token;  // 会话令牌, 只在服务端用, 不下发给浏览器
+    std::string pid;    // 房间内的信令地址, 会下发给浏览器
+    std::string user;
+    int64_t seenMs = 0;
+    bool live = false;  // seen 还在 TTL 内
+};
+
+struct Signal {
+    uint64_t seq = 0;
+    std::string from;
+    std::string kind;
+    std::string payload;  // 客户端发来的原始 JSON 片段
+};
+
+struct Me {
+    std::string room;
+    std::string pid;
+    std::string user;
+};
+
+// 我在哪个房间。返回 false 时: *err 为空 = 不在任何房间, *err 非空 = 出错了。
+bool whereAmI(const std::string& token, Me* me, std::string* err);
+
+// 这个房间号现在有人吗 (用来避免分配重复的房间号)
+bool roomLive(const std::string& room, bool* out, std::string* err);
+
+enum class Enter { Ok, Full, Error };
+
+// 进房间。会清掉上一个房间留下的信令, 不然会去连一个已经不在的人。
+// 成功时 *pid 是新分配的信令地址 (每次进房间都换一个)。
+Enter enter(const std::string& token, const std::string& user, const std::string& room,
+            std::string* pid, std::vector<Member>* members, std::string* err);
+
+// 心跳 + 取回成员列表和信令收件箱。不在房间里时 *room 为空。
+bool sync(const std::string& token, uint64_t since, std::string* room,
+          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* err);
+
+enum class Send { Delivered, NoSuchPeer, NotInRoom, Error };
+
+// 把一条信令放进目标参会者的收件箱。只能发给同一个房间里还活着的人。
+Send send(const std::string& token, const std::string& toPid, const std::string& kind,
+          const std::string& payload, std::string* err);
+
+bool leave(const std::string& token, std::string* err);
+
+// 活跃房间数 (给 /api/health 用, SCAN 出来的, 有上限)
+bool activeRooms(long long* out, std::string* err);
+
+}  // namespace presence
