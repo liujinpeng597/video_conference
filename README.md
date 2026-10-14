@@ -5,6 +5,7 @@
 自托管的视频会议：浏览器之间 WebRTC 直连，后端只做账号、房间和信令。
 
 ```bash
+cp .env.example .env    # 填上 POSTGRES_PASSWORD (本地开发随便填)
 docker compose up -d --build
 # 浏览器打开 http://127.0.0.1:9000
 # 想试两个人开会: 再开一个标签页注册另一个账号, 填同一个房间号
@@ -46,7 +47,7 @@ docker compose up -d --build
 | `video_client/` | Vue 3 前端，没有构建步骤。**[README](video_client/README.md)** |
 | `nginx/` | 入口层配置（静态文件 + 负载均衡） |
 | `docker-compose.yml` | 整套编排 |
-| `.env` | 本机镜像站配置（`.env.example` 是模板） |
+| `.env` | 本机配置：数据库口令 + 镜像站（`.env.example` 是模板） |
 
 ## 现在能做什么
 

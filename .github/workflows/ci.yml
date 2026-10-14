@@ -24,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # compose 现在要求 POSTGRES_PASSWORD (fail-closed), CI 里用模板里的开发占位值
+      - name: 准备 .env
+        run: cp .env.example .env
+
       # 和本地同一条命令。db/redis 由 compose 起, smoke 会等它们健康后再跑。
       - name: 构建并跑 smoke 全链路
         run: docker compose run --build --rm test

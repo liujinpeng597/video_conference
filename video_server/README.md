@@ -20,10 +20,11 @@ docker compose up -d --build      # 在仓库根目录
 只想在 WSL 里跑二进制、中间件用容器：
 
 ```bash
+# 前提: 根目录 .env 已建好 (cp .env.example .env, 填好 POSTGRES_PASSWORD)
 docker compose up -d db redis
 sudo apt install -y build-essential pkg-config libpq-dev libsodium-dev libhiredis-dev
 cd video_server && make && ./video_server --port 9000 --web ../video_client \
-    --db postgresql://video:video@127.0.0.1:5432/video_conference \
+    --db postgresql://video:<POSTGRES_PASSWORD>@127.0.0.1:5432/video_conference \
     --redis redis://127.0.0.1:6379
 ```
 
