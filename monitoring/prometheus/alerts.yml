@@ -1,0 +1,40 @@
+# 告警规则。现在没有接 Alertmanager / 通知渠道, 先在 Prometheus 的 Alerts 页面看;
+# 接通知是下一步 (Alertmanager 或 Grafana 告警都行, 规则不用改)。
+groups:
+  - name: video-conference
+    rules:
+      - alert: InstanceDown
+        expr: up{job="video_server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "有后端实例抓不到指标了 (挂了或网络断了)"
+          description: "{{ $labels.instance }} 已经 1 分钟 up==0"
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(video_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(video_requests_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "5xx 比例超过 1%"
+          description: "最近 5 分钟 5xx 占比 {{ $value | humanizePercentage }}"
+
+      - alert: RedisErrors
+        expr: increase(video_redis_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 错误在增长 (房间状态/信令会受影响)"
+
+      - alert: DbErrors
+        expr: increase(video_db_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL 错误在增长 (登录/会话会受影响)"

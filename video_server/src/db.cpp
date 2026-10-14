@@ -1,4 +1,7 @@
+#include "log.h"
 #include "db.h"
+
+#include "metrics.h"
 
 #include <libpq-fe.h>
 
@@ -47,9 +50,14 @@ PGconn* handle(std::string* err) {
 }
 
 // 跑一条带参数的 SQL。成功返回结果集 (调用方 PQclear), 失败返回 nullptr 并填 *err。
+// 连接坏了会重连并重试一次 (理由和 redis.cpp 的 run() 一样: thread_local 连接在
+// PG 重启后要等"下一次使用"才发现坏, 恢复期每个连接各失败一次; 取舍也相同)。
 PGresult* query(std::string* err, const char* sql, const std::vector<std::string>& params) {
     PGconn* c = handle(err);
-    if (c == nullptr) return nullptr;
+    if (c == nullptr) {
+        metrics::countDbError();
+        return nullptr;
+    }
 
     std::vector<const char*> values;
     values.reserve(params.size());
@@ -57,8 +65,19 @@ PGresult* query(std::string* err, const char* sql, const std::vector<std::string
 
     PGresult* r = PQexecParams(c, sql, (int)values.size(), nullptr,
                                values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
+    if (PQstatus(c) == CONNECTION_BAD) {  // 连接坏了: 重连 + 重试一次
+        metrics::countDbError();
+        PQclear(r);
+        PQfinish(t_conn);
+        t_conn = nullptr;
+        c = handle(err);
+        if (c == nullptr) return nullptr;
+        r = PQexecParams(c, sql, (int)values.size(), nullptr,
+                         values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
+    }
     const ExecStatusType st = PQresultStatus(r);
     if (st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK) {
+        metrics::countDbError();
         *err = trimErr(PQresultErrorMessage(r));
         PQclear(r);
         return nullptr;
@@ -68,11 +87,26 @@ PGresult* query(std::string* err, const char* sql, const std::vector<std::string
 
 bool execStatement(const char* sql, std::string* err) {
     PGconn* c = handle(err);
-    if (c == nullptr) return false;
+    if (c == nullptr) {
+        metrics::countDbError();
+        return false;
+    }
     PGresult* r = PQexec(c, sql);
+    if (PQstatus(c) == CONNECTION_BAD) {  // 连接坏了: 重连 + 重试一次
+        metrics::countDbError();
+        PQclear(r);
+        PQfinish(t_conn);
+        t_conn = nullptr;
+        c = handle(err);
+        if (c == nullptr) return false;
+        r = PQexec(c, sql);
+    }
     const ExecStatusType st = PQresultStatus(r);
     const bool ok = (st == PGRES_COMMAND_OK || st == PGRES_TUPLES_OK);
-    if (!ok) *err = trimErr(PQresultErrorMessage(r));
+    if (!ok) {
+        metrics::countDbError();
+        *err = trimErr(PQresultErrorMessage(r));
+    }
     PQclear(r);
     return ok;
 }
@@ -127,7 +161,7 @@ bool init(const std::string& conninfo, std::string* err) {
         }
         last = e;
         if (i + 1 < kTries) {
-            std::fprintf(stderr, "[db] 连不上数据库, 1 秒后重试 (%d/%d): %s\n", i + 1, kTries, e.c_str());
+            logmsg("[db] 连不上数据库, 1 秒后重试 (%d/%d): %s\n", i + 1, kTries, e.c_str());
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
@@ -227,7 +261,7 @@ void purgeExpired() {    std::string err;
         PQclear(r);
         return;
     }
-    if (!err.empty()) std::fprintf(stderr, "[db] 清理过期令牌失败: %s\n", err.c_str());
+    if (!err.empty()) logmsg("[db] 清理过期令牌失败: %s\n", err.c_str());
 }
 
 }  // namespace db

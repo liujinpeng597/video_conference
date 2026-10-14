@@ -105,7 +105,7 @@
         peerHasVideo: {},   // pid -> 有没有收到画面
         audioBlocked: false,
 
-        media: { stream: null, cam: true, mic: true, error: '' },
+        media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         copied: false,
         videoEl: null,
         syncTimer: 0,
@@ -143,6 +143,12 @@
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible' && this.view === 'room') this.scheduleSync(0);
       });
+
+      // 外接摄像头 / 麦克风插拔 (路线图 P1 前端兼容性): 拔掉自动换轨, 插回来自动恢复,
+      // 不用刷新页面 (见 recoverMedia)。iOS 上 devicechange 基本不触发, 不影响原有行为。
+      if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        navigator.mediaDevices.addEventListener('devicechange', () => { this.recoverMedia(); });
+      }
     },
 
     beforeUnmount() {
@@ -746,7 +752,13 @@
       startMedia() {
         this.media.error = '';
         if (this.media.stream) {
-          if (this.videoEl) this.videoEl.srcObject = this.media.stream;
+          // 轨道都活着: 只是切视图回来, 重新绑一下预览就行
+          if (this.media.stream.getTracks().every((t) => t.readyState === 'live')) {
+            if (this.videoEl) this.videoEl.srcObject = this.media.stream;
+            return;
+          }
+          // 有轨道已经死了 (设备被拔掉): 走和插拔事件同一条修复路径
+          this.recoverMedia();
           return;
         }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -760,6 +772,61 @@
             ? '你拒绝了摄像头或麦克风权限。在地址栏左边重新允许，然后点重试。'
             : '拿不到摄像头或麦克风，可能被别的程序占用了。可以点重试，或者直接进房间。';
         });
+      },
+
+      // 摄像头/麦克风插拔 (路线图 P1 前端兼容性): 拔掉时浏览器把那条 track 置成 ended,
+      // 这里只重拿死掉的那些种类 (视频死了不动音频), 拿到后就地换轨 —— MediaStream 里
+      // 换一条 + 每个连接 replaceTrack, 不触发重新协商, 对端几秒内自己恢复。
+      // 拿不回来 (设备还没插回) 就落错误提示; 用户插回后 devicechange 会再试, 或点「重试」。
+      async recoverMedia() {
+        if (this.media.recovering || !this.media.stream) return;
+        const s = this.media.stream;
+        const dead = s.getTracks().filter((t) => t.readyState === 'ended');
+        if (!dead.length) return;  // 只是新插了设备, 现有轨道都活着
+        const wantCam = this.media.cam;  // 保持用户之前的开关: 关着的, 新轨道也先关着
+        const wantMic = this.media.mic;
+        this.media.recovering = true;
+        try {
+          const fresh = await navigator.mediaDevices.getUserMedia({
+            video: dead.some((t) => t.kind === 'video'),
+            audio: dead.some((t) => t.kind === 'audio'),
+          });
+          for (const t of fresh.getTracks()) {
+            const old = s.getTracks().find((x) => x.kind === t.kind && x.readyState === 'ended');
+            if (!old) continue;
+            t.enabled = t.kind === 'video' ? wantCam : wantMic;
+            for (const state of calls.values()) {
+              const sender = state.pc.getSenders().find((x) => x.track === old);
+              // replaceTrack 是异步生效的: 要等它落地, 不然下面的兜底会误判成"这条轨道还没挂上"
+              if (sender) {
+                try { await sender.replaceTrack(t); } catch (e) { /* 连接正在重建, 交给看门狗 */ }
+              }
+            }
+            s.removeTrack(old);
+            old.stop();
+            s.addTrack(t);
+          }
+          // 兜底: 建连接时还没有摄像头/麦克风的那条 pc (只有 recvonly transceiver),
+          // 没有可换的 sender, 就补一条新的, 让它自己触发重新协商
+          for (const state of calls.values()) {
+            for (const t of s.getTracks()) {
+              if (!state.pc.getSenders().some((x) => x.track === t)) {
+                try { state.pc.addTrack(t, s); } catch (e) { /* 同上 */ }
+              }
+            }
+          }
+          this.media.cam = s.getVideoTracks().length > 0 && wantCam;
+          this.media.mic = s.getAudioTracks().length > 0 && wantMic;
+          this.media.error = '';
+        } catch (e) {
+          this.media.error = '摄像头或麦克风断开了：接回来，或点重试。';
+          // cam / mic 既表示开关也表示"设备在不在": 没有活着的轨道 = 设备不在了
+          const live = (kind) => s.getTracks().some((t) => t.kind === kind && t.readyState === 'live');
+          this.media.cam = live('video') && wantCam;
+          this.media.mic = live('audio') && wantMic;
+        } finally {
+          this.media.recovering = false;
+        }
       },
 
       applyStream(stream) {

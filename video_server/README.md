@@ -266,8 +266,8 @@ ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
 - **TLS 终止**在 nginx 这一层，加证书就行，代码不用动。
 - **限流**：现在没有。放在 nginx（`limit_req`）或者应用里按用户名/IP 记失败次数都可以。
   这是当前最该补的安全缺口。
-- **可观测性**：现在只有 stderr 日志和 `/api/health`。要上 Prometheus 的话在
-  `/api/health` 旁边加一个 `/metrics` 就行，格式是纯文本，不用引库。
+- **可观测性**：`/metrics` + monitoring profile + 带毫秒时间戳/实例名的日志已就位
+  （见「可观测性」一节）；外部探活与告警通知渠道等公网部署时再接。
 - **`X-Forwarded-For`**：过 nginx 之后后端看到的对端地址全是 nginx 的 IP。要拿真实 IP
   得读这个头，但读它就要决定信不信它（客户端能伪造），现在没读，日志里当它不存在。
 - **Redis 本身是单点**。真要高可用得上哨兵/集群，或者至少让它跑在独立机器上并配持久化
@@ -280,6 +280,27 @@ ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
 - **TURN（coturn）要单独部署**，需要公网 IP 和一个固定的 UDP 端口段，不是 HTTP，
   挂不到 nginx 后面。
 - 以后真上 SFU 也一样：独立进程 + 自己的 UDP 端口段。
+
+## 可观测性
+
+**指标**：每个后端实例在 `GET /metrics` 暴露 Prometheus 纯文本指标（自己实现，没引库）：
+按接口类别和状态码的请求计数、延迟直方图、活跃房间数、Redis / PostgreSQL 错误计数、
+实例名与运行时长。app 端口不对外发布、nginx 也不代理这个路径，所以指标只在 compose 网络内可见。
+
+```bash
+# Prometheus(127.0.0.1:9090) + Grafana(127.0.0.1:3001, admin/admin)
+docker compose --profile monitoring up -d
+# Grafana 里有预置面板「同频 · 总览」: 流量/延迟、错误率、房间数与登录失败
+```
+
+告警规则在 `monitoring/prometheus/alerts.yml`（实例掉线、5xx 比例超 1%、依赖错误增长），
+先在 Prometheus 的 Alerts 页面看；接 Alertmanager 或 Grafana 通知渠道是下一步。
+外部探活（Uptime 服务盯 `/api/health` 与证书到期）等有公网部署时再加。
+
+**日志**：所有 stderr 日志带毫秒时间戳和实例名，例如
+`[2026-10-14 13:37:22.123] [0be35c58deae] [api] POST /api/login -> 401` ——
+多实例混在 `docker compose logs` 里也能分清是谁在说话；nginx 访问日志本来就带 `rt` / `upstream`。
+规模内不上 ELK，`docker logs` + json-file 轮转（10m × 5）就是正解。
 
 ## 自测
 

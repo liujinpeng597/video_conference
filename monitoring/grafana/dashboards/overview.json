@@ -1,0 +1,57 @@
+{
+  "title": "同频 · 总览",
+  "uid": "tongpin-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "请求速率 (按接口类别)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(video_requests_total[1m]))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "p95 延迟 与 5xx 错误率",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(video_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{route}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(video_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(video_requests_total[5m])), 0.001)",
+          "legendFormat": "5xx 比例",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "房间数 / 登录失败 / 依赖错误",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "video_rooms_active", "legendFormat": "活跃房间", "refId": "A" },
+        {
+          "expr": "sum(rate(video_requests_total{route=\"login\",status=~\"401|429\"}[5m]))",
+          "legendFormat": "登录失败或被限",
+          "refId": "B"
+        },
+        { "expr": "rate(video_redis_errors_total[5m])", "legendFormat": "redis 错误", "refId": "C" },
+        { "expr": "rate(video_db_errors_total[5m])", "legendFormat": "db 错误", "refId": "D" }
+      ]
+    }
+  ]
+}

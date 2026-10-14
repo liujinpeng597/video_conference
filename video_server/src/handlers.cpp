@@ -29,6 +29,8 @@
 #include "auth.h"
 #include "db.h"
 #include "json.h"
+#include "log.h"
+#include "metrics.h"
 #include "presence.h"
 #include "random.h"
 #include "redis.h"
@@ -256,10 +258,9 @@ void sendResp(Connection& c, const Resp& r, bool keepAlive) {
     out += "\r\nContent-Length: ";
     out += std::to_string(r.body.size());
     out += keepAlive ? "\r\nConnection: keep-alive" : "\r\nConnection: close";
-    // 前端以后可能从别的端口 (比如 vite) 打开, CORS 开着不碍事
-    out += "\r\nAccess-Control-Allow-Origin: *";
-    out += "\r\nAccess-Control-Allow-Headers: Content-Type, Authorization";
-    out += "\r\nAccess-Control-Max-Age: 600";
+    // 不开 CORS: 前端和 API 同源部署 (nginx 既发静态文件又反代 /api), 浏览器不会发预检;
+    // 需要跨域调试的话, 更安全的做法是在这里按白名单发 Access-Control-Allow-Origin,
+    // 而不是给所有站点开 *。
     out += "\r\nCache-Control: no-store";
     out += "\r\n\r\n";
     out += r.body;
@@ -307,7 +308,7 @@ bool requireAuth(const Request& req, std::string* user, Resp* fail) {
         case auth::Check::Ok:
             return true;
         case auth::Check::Error:
-            std::fprintf(stderr, "[api] 查会话失败: %s\n", err.c_str());
+            logmsg("[api] 查会话失败: %s\n", err.c_str());
             *fail = errJson(500, "服务端查会话失败");
             return false;
         case auth::Check::BadToken:
@@ -377,7 +378,7 @@ bool loginLocked(const std::string& name) {
     std::string v;
     std::string err;
     if (!redis::get(loginFailKey(name), &v, &err)) {
-        if (!err.empty()) std::fprintf(stderr, "[api] 读登录失败计数出错, 本次放行: %s\n", err.c_str());
+        if (!err.empty()) logmsg("[api] 读登录失败计数出错, 本次放行: %s\n", err.c_str());
         return false;
     }
     return std::strtoll(v.c_str(), nullptr, 10) >= kLoginMaxFails;
@@ -388,7 +389,7 @@ void noteLoginFail(const std::string& name) {
     std::string err;
     long long n = 0;
     if (!redis::incr(loginFailKey(name), &n, &err)) {
-        if (!err.empty()) std::fprintf(stderr, "[api] 记登录失败次数出错: %s\n", err.c_str());
+        if (!err.empty()) logmsg("[api] 记登录失败次数出错: %s\n", err.c_str());
         return;
     }
     redis::expire(loginFailKey(name), kLoginLockSecs, &err);
@@ -443,12 +444,12 @@ Resp apiLogout(const Request& req) {
     // (房间 key 有 TTL, 就算这次没清掉, 一分钟以后也会自己消失)。
     std::string leaveErr;
     if (!presence::leave(req.token, &leaveErr)) {
-        std::fprintf(stderr, "[api] 退出登录时清房间失败: %s\n", leaveErr.c_str());
+        logmsg("[api] 退出登录时清房间失败: %s\n", leaveErr.c_str());
     }
 
     std::string err;
     if (auth::logout(req.token, rememberToken, &err) == auth::Check::Error) {
-        std::fprintf(stderr, "[api] 退出登录删令牌失败: %s\n", err.c_str());
+        logmsg("[api] 退出登录删令牌失败: %s\n", err.c_str());
         return errJson(500, "服务端清理会话失败");
     }
     return okJson("{\"ok\":true}");
@@ -763,21 +764,32 @@ Resp serveStatic(const std::string& url) {
 void route(Connection& c, const Request& req) {
     const bool isApi = req.path.rfind("/api/", 0) == 0;
 
+    const auto t0 = std::chrono::steady_clock::now();
     Resp r;
     if (req.method == "OPTIONS") {
         r.code = 204;  // 预检
     } else if (isApi) {
         r = routeApi(req);
+    } else if (req.path == "/metrics" && req.method == "GET") {
+        // 给 Prometheus 刮的纯文本指标。app 端口不对外发布, nginx 也不代理这个路径。
+        r.code = 200;
+        r.type = "text/plain; version=0.0.4; charset=utf-8";
+        r.body = metrics::render();
     } else if (req.method == "GET") {
         r = serveStatic(req.path);
     } else {
         r = errText(405, "静态资源只支持 GET");
     }
+    // 请求计数 + 延迟直方图 (纯内存原子操作, 开销可忽略; 见 metrics.cpp)
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    metrics::observeRequest(metrics::classify(req.path), r.code, (uint64_t)us);
 
     if (isApi && req.method != "OPTIONS") {
-        std::fprintf(stderr, "[api] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
+        logmsg("[api] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
     } else if (!isApi && r.code != 200 && r.code != 204) {
-        std::fprintf(stderr, "[web] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
+        logmsg("[web] %s %s -> %d\n", req.method.c_str(), req.path.c_str(), r.code);
     }
 
     sendResp(c, r, req.keepAlive);
@@ -793,7 +805,7 @@ void setIceServers(const std::string& jsonArray) {
     if (jsonArray.size() >= 2 && jsonArray.front() == '[' && jsonArray.back() == ']') {
         g_iceServers = jsonArray;
     } else {
-        std::fprintf(stderr, "[srv] ICE_SERVERS 不是 JSON 数组, 忽略: %s\n", jsonArray.c_str());
+        logmsg("[srv] ICE_SERVERS 不是 JSON 数组, 忽略: %s\n", jsonArray.c_str());
     }
 }
 
@@ -804,7 +816,7 @@ void setTurnConfig(const std::string& url, const std::string& secret, long long 
 }
 
 void onConnect(Connection& c) {
-    std::fprintf(stderr, "[conn] + %s fd=%d\n", c.peer.c_str(), c.fd);
+    logmsg("[conn] + %s fd=%d\n", c.peer.c_str(), c.fd);
 }
 
 void onMessage(Connection& c, const char* data, size_t len) {
@@ -833,5 +845,5 @@ void onMessage(Connection& c, const char* data, size_t len) {
 
 void onClose(Connection& c) {
     // 房间在线状态靠心跳超时回收 (kPresenceTtlMs) + 定期清扫, 这里不用特意做什么
-    std::fprintf(stderr, "[conn] - %s\n", c.peer.c_str());
+    logmsg("[conn] - %s\n", c.peer.c_str());
 }

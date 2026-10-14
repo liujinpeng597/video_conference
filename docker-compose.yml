@@ -108,6 +108,9 @@ services:
     build:
       context: .
       dockerfile: video_server/Dockerfile
+    # 每个副本的 worker 线程数: 默认 0 = 自动取核数。小机器上 3 副本 × 核数 会互相超卖,
+    # 用 APP_WORKERS=1~2 收窄 (连接数公式见 DEPLOY.md「容量参数」)。
+    command: ["./video_server", "--port", "9000", "--workers", "${APP_WORKERS:-0}", "--web", "video_client"]
     environment:
       DATABASE_URL: postgresql://video:${POSTGRES_PASSWORD:?没设置 POSTGRES_PASSWORD, 先 cp .env.example .env 并填一个密码}@db:5432/video_conference
       REDIS_URL: redis://redis:6379
@@ -202,5 +205,35 @@ services:
         condition: service_healthy
     logging: *default-logging
 
+  # 可观测性 (可选): docker compose --profile monitoring up -d
+  #   Prometheus: http://127.0.0.1:9090    Grafana: http://127.0.0.1:3001 (admin/<GRAFANA_ADMIN_PASSWORD>)
+  # 都只绑回环; 指标来源是每个 app 实例的 /metrics (见 video_server/README.md「可观测性」)。
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.1.0}
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.4.0}
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+    logging: *default-logging
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:

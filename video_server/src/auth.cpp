@@ -1,3 +1,4 @@
+#include "log.h"
 #include "auth.h"
 
 #include <sodium.h>
@@ -164,7 +165,7 @@ bool mintTokens(long long userId, const std::string& username, bool remember, Re
 
 void init() {
     if (sodium_init() < 0) {
-        std::fprintf(stderr, "[auth] sodium_init 失败, 密码功能不可用\n");
+        logmsg("[auth] sodium_init 失败, 密码功能不可用\n");
     }
     // 拿随机内容算一个哈希, 专门用来给"用户不存在"那条路垫时间
     hashPassword(randomToken(), &g_dummyHash);

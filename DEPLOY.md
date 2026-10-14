@@ -139,3 +139,52 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec nginx nginx
 | 有人转圈连不上 | TURN：3478/udp 放行了吗；`TURN_URL` 是不是公网地址 |
 | 拿不到摄像头 | 是不是从 http 打开的（getUserMedia 只在 https / localhost 可用） |
 | 数据库连不上 | `docker compose logs db`；磁盘空间 |
+
+## 8. 容量参数（副本 × workers × 连接数）
+
+并发用户数和 rps 的换算口径、瓶颈排序和实测数字见 `ops/loadtest/README.md`；
+这里只留运维要用的公式：
+
+```
+每秒请求数 ≈ 并发用户数 × (0.5 轮询 + 0.5~1 信令)      # 1000 用户 ≈ 500~1000 rps
+PostgreSQL 连接数 = 副本数 × 每副本 workers             # 默认 workers = 核数
+Redis 连接数     = 副本数 × 每副本 workers             # hiredis, 每个 worker 一条
+```
+
+- 2 核 VPS：在 `.env` 里写 `APP_WORKERS=2`。3 副本 × 2 = 6 条 PG / Redis 连接。
+  注意默认值的坑：`--workers 0` 取的是**宿主机**核数（容器里看不到 CPU 配额），
+  小机器上会超卖，所以显式收窄。
+- 8 核以上：默认值就够（3 × 8 = 24 条 PG 连接，离 `max_connections=100` 很远）；
+  真要跨机扩容时再核对这个乘积。
+- 实测（8 vCPU 开发机）：950 并发用户 ≈ 950 rps 时整栈只用 ~1.2/8 核，瓶颈排序是
+  PostgreSQL 点查 > nginx 转发 > Redis。单机上"加副本"不会明显抬高上限，
+  先把这个乘积和 PG 的 `max_connections` 预算算清楚更值。
+
+## 9. 降级矩阵（依赖挂了发生什么）
+
+| 依赖 | 用户看到什么 | 现在怎么办 |
+|---|---|---|
+| PostgreSQL 挂 | 登录 / 注册 / 会话校验 / 房间状态全 5xx；**已在开会的人媒体不受影响**（媒体不经过服务器），但刷新或重进会失败 | 起回 PG 即恢复（服务自动重连）；本机演练：`bash ops/degradation-drill.sh` |
+| Redis 挂 | `/api/health` 返回 `ok:false`；进房 / 轮询 / 信令 5xx；已开会的画面声音继续，但状态与信令停更、看门狗重连会失败 | 起回 Redis 即恢复；进程启动时连不上 Redis 会拒绝启动（fail-fast，有意的） |
+| nginx 挂 | 全站不可用（唯一入口，单点） | 重启 nginx；真正的入口高可用要第二实例 + VIP / 云 LB（P2） |
+| coturn 挂 | 直连 / 局域网通话不受影响；对称 NAT、企业网的用户连不上 | 重启 coturn；容器内 `turnutils_stunclient -p 3478 127.0.0.1` 自检 |
+
+## 10. Runbook（部署 / 回滚 / 恢复 / 轮换）
+
+- **部署**：`git fetch --tags && git checkout v0.x.y && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
+- **回滚**：切回上一个 tag 再 `up -d --build`（代码和镜像都在 tag 里；数据库只做向后兼容变更，破坏性变更前先备份）
+- **恢复备份**：见 `ops/README.md`（`docker compose run --rm backup /ops/restore.sh <dump>`，恢复进新库后按打印的步骤人工切换）
+- **轮换数据库口令**：改 `.env` 的 `POSTGRES_PASSWORD` → `docker compose up -d --force-recreate db` → `docker compose up -d --force-recreate app`
+- **证书续期**：见第 3 节的 cron（证书过期 = 浏览器拒开摄像头，必须装）
+- **看日志**：`docker compose logs app --since 10m`；日志带毫秒时间戳和实例名（格式见 `video_server/README.md`）
+- **压测数字**：`ops/loadtest/README.md` 的"实测记录"（开发机 950 VU ≈ 950 rps、0 失败；瓶颈是每请求一次 PG 令牌点查）
+
+## 11. 移动端与浏览器兼容
+
+- **video 需要安全上下文**：https 或 localhost，否则拿不到摄像头（自签 + 信任 CA 见 `nginx/README.md`）。
+- **iOS Safari / 手机锁屏**：JS 被系统挂起，超过服务端 30 秒心跳阈值会被别人判掉线；
+  前端"连续两拍"宽限期只对弱网抖动有效，救不了锁屏 —— 文案上建议提示"手机端保持屏幕常亮 / 前台"。
+- **桌面浏览器后台标签**：定时器会被节流，弱网下同样可能被判掉线；已有缓解：
+  30 秒阈值 + 两拍宽限 + 回到前台立刻补心跳。
+- **外接摄像头热插拔**：页面监听 `devicechange`，轨道 ended 时自动重取并 `replaceTrack`
+  （尽力而为，插拔瞬间可能仍需几秒恢复；无头环境无法自动化验证这条）。

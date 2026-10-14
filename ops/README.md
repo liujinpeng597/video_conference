@@ -60,3 +60,24 @@ schtasks /create /tn "video_conference 备份" /sc daily /st 03:00 /tr "powershe
 |---|---|---|---|---|
 | 2026-10-14 | `video_conference-20261014-043906.dump` | 161 账号 / 20.8 KB | <1 秒 | 通过（含抽查账号哈希一致性、行数对照） |
 | 2026-10-14 | `video_conference-20261014-045446.dump` | 173 账号 / 22.6 KB | <1 秒 | 通过（复跑；抽查哈希一致、行数对照通过） |
+
+## 浏览器 E2E（音视频通路自动化）
+
+`ops/e2e-media.mjs`：无头 Chrome / Edge 开 3 个标签页进同一房间，断言对端画面真的
+解码出帧（`videoWidth > 0`）且收发双向的 RTP 字节数都大于 0。CI 里在完整测试之后跑。
+
+```bash
+docker compose up -d --build     # 先把开发形态起在 127.0.0.1:9000
+node ops/e2e-media.mjs           # 全绿输出 "==== 浏览器 E2E 全部通过 ===="
+```
+
+- 环境变量：`CHROME_BIN`（指定浏览器，默认自动找 Chrome / Edge）、
+  `E2E_BASE_URL`（默认 `http://127.0.0.1:9000`）；
+- 一个坑：无头多标签页里非前台标签会被冻结，应用的视图切换动画（`mode="out-in"`）
+  会卡住、新视图不挂载 —— 脚本用 `Page.bringToFront` + 关后台节流解决，迭代时别删。
+
+## 负载测试（k6）
+
+见 [`loadtest/README.md`](loadtest/README.md)：`bash ops/loadtest/run.sh` 在 compose
+网络里起 k6 压"进房 + 轮询 + 信令"整套链路。实测数字（950 VU ≈ 950 rps、0 失败）
+与瓶颈分析（最大头是每请求一次 PG 令牌点查）都记在那份 README 里。

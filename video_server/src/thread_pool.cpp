@@ -1,3 +1,4 @@
+#include "log.h"
 #include "thread_pool.h"
 
 #include <cstdio>
@@ -18,7 +19,7 @@ bool ThreadPool::start() {
     for (auto& lp : loops_) {
         lp = std::make_unique<EventLoop>();
         if (!lp->init()) {
-            std::fprintf(stderr, "thread pool: event loop init failed\n");
+            logmsg("thread pool: event loop init failed\n");
             return false;
         }
     }

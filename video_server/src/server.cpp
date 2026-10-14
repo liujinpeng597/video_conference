@@ -1,3 +1,4 @@
+#include "log.h"
 #include "server.h"
 
 #include <arpa/inet.h>
@@ -82,7 +83,7 @@ bool Server::start() {
     if (!acceptLoop_.add(sigfd_, EPOLLIN, [this](uint32_t) { onSignal(); })) return false;
 
     running_ = true;
-    std::fprintf(stderr, "[srv] listening on 0.0.0.0:%u with %d worker thread(s)\n", port_, nworkers_);
+    logmsg("[srv] listening on 0.0.0.0:%u with %d worker thread(s)\n", port_, nworkers_);
     return true;
 }
 
@@ -121,8 +122,8 @@ void Server::stop() {
         }
         table.clear();
     }
-    if (alive) std::fprintf(stderr, "[srv] closed %zu leftover connection(s)\n", alive);
-    std::fprintf(stderr, "[srv] stopped\n");
+    if (alive) logmsg("[srv] closed %zu leftover connection(s)\n", alive);
+    logmsg("[srv] stopped\n");
 }
 
 bool Server::listenOn() {
@@ -161,7 +162,7 @@ void Server::onAccept() {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
             if (errno == EINTR) continue;
             if (errno == EMFILE || errno == ENFILE) {
-                std::fprintf(stderr, "[srv] out of file descriptors, accept paused\n");
+                logmsg("[srv] out of file descriptors, accept paused\n");
                 return;  // 等下一轮可读事件再试
             }
             perror("accept4");
@@ -254,7 +255,7 @@ void Server::sendOn(Connection& c, const char* data, size_t len) {
 
     c.out.append(data, len);
     if (c.out.size() > kMaxOutBuf) {
-        std::fprintf(stderr, "[srv] %s send buffer overflow, dropping connection\n", c.peer.c_str());
+        logmsg("[srv] %s send buffer overflow, dropping connection\n", c.peer.c_str());
         doClose(c.worker, c.shared_from_this());
         return;
     }
@@ -285,7 +286,7 @@ void Server::doClose(size_t w, const std::shared_ptr<Connection>& c) {
 void Server::onSignal() {
     signalfd_siginfo si{};
     while (::read(sigfd_, &si, sizeof si) == (ssize_t)sizeof si) {
-        std::fprintf(stderr, "\n[srv] caught signal %u, shutting down\n", si.ssi_signo);
+        logmsg("\n[srv] caught signal %u, shutting down\n", si.ssi_signo);
         stop();
     }
 }

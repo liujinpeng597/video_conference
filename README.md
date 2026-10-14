@@ -50,7 +50,7 @@ docker compose up -d --build
 | `docker-compose.yml` | 整套编排（含 coturn 中继） |
 | `docker-compose.prod.yml` | 生产覆盖：HTTPS + 80/443 入口 |
 | `.env` | 本机配置：数据库口令 / TURN 密钥 + 镜像站（`.env.example` 是模板） |
-| `ops/` | 备份 / 恢复演练脚本（策略与 RPO/RTO 见其 README） |
+| `ops/` | 运维脚本：备份 / 恢复、降级演练、证书、TLS 冒烟、浏览器 E2E（`loadtest/` 是 k6 压测） |
 | `DEPLOY.md` | 上线手册：VPS 加固 / 证书 / 备份 cron / 升级回滚 |
 
 ## 现在能做什么
@@ -79,6 +79,9 @@ docker compose up -d --build
 docker compose run --build --rm test
 ```
 
-覆盖后端全链路（含两个独立进程共享 Redis 的互通测试、50 条并发信令的顺序断言）。前端那侧的音视频通路由
-浏览器实测：三个标签页进同一房间，断言对端画面真的解码出了帧、收发两个方向的
-RTP 字节数都大于 0。
+覆盖后端全链路（含两个独立进程共享 Redis 的互通测试、50 条并发信令的顺序断言）。
+浏览器侧的音视频通路已脚本化：`docker compose up -d --build` 后跑 `node ops/e2e-media.mjs`
+（CI 里自动跑）——三个无头标签页进同一房间，断言对端画面解码出帧、双向 RTP 字节数都大于 0。
+
+可观测性（可选）：`docker compose --profile monitoring up -d` —— Prometheus 在
+`127.0.0.1:9090`、Grafana 在 `127.0.0.1:3001`（预置「同频 · 总览」面板与告警规则）。

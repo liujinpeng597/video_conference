@@ -631,8 +631,9 @@ rm -f /tmp/vs_smoke_c*.code
 echo
 echo "---- 连接回收 ----"
 sleep 0.5
-opened=$(grep -c '^\[conn\] +' "$LOG")
-closed=$(grep -c '^\[conn\] -' "$LOG")
+# 日志现在带 "[时间戳] [实例名] " 前缀 (见 src/log.cpp), 所以不能再锚在行首
+opened=$(grep -c '\[conn\] +' "$LOG")
+closed=$(grep -c '\[conn\] -' "$LOG")
 check "建立/关闭数量一致" "$opened" "$closed"
 [ "$opened" -gt 10 ] && echo "ok   - 确实跑了不少连接 ($opened 条)" || { echo "FAIL - 连接数太少 ($opened)"; fail=1; }
 

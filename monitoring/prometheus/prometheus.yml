@@ -1,0 +1,19 @@
+# Prometheus 抓取配置 (随 docker compose --profile monitoring 启用)。
+# 服务名 app 会解析出 3 个副本的 IP, 每个都会成为独立 target。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: video_server
+    # 用 dns_sd 而不是 static_configs: compose 里 app 有 3 个副本, 服务名解析出 3 个 IP。
+    # static_configs 只会抓其中一个; dns_sd 按 A 记录给每个副本建一个 target,
+    # 并按 refresh_interval 跟着实例增减 (和 nginx 那边"变量 + resolver"是同一个道理)。
+    dns_sd_configs:
+      - names: ["app"]
+        type: A
+        port: 9000
+        refresh_interval: 15s

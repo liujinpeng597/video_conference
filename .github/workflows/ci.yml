@@ -20,7 +20,7 @@ jobs:
   test:
     name: 全链路测试
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +35,22 @@ jobs:
       # 生产形态: 自签证书 + 80/443 + TLS + 限流, 一条链路整验
       - name: 生产形态 TLS 冒烟
         run: bash ops/smoke-tls.sh
+
+      # 浏览器 E2E: 无头 Chrome 三个标签页进同一房间, 断言画面解码 + 双向 RTP (ops/e2e-media.mjs)
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 起开发形态 (9000)
+        run: docker compose up -d --build
+
+      - name: 浏览器 E2E (音视频互通)
+        run: node ops/e2e-media.mjs
+
+      - name: 收开发形态
+        if: always()
+        run: docker compose down
 
   image:
     name: 构建运行镜像
@@ -67,3 +83,12 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 漏洞扫描: 先"只报告不拦截" (公共基础镜像的 CVE 噪音大, 看趋势再收紧)
+      - name: 镜像漏洞扫描 (trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          exit-code: '0'

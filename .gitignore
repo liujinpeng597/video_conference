@@ -21,3 +21,6 @@ nginx/letsencrypt/
 
 # 数据库备份 (pg_dump 产物; 备份脚本见 ops/)
 backups/
+
+# 负载测试产物 (k6 汇总; 说明见 ops/loadtest/README.md)
+ops/loadtest/out/

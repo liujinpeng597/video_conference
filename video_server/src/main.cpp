@@ -1,3 +1,4 @@
+#include "log.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +16,7 @@ const char* kDefaultDb = "postgresql://video:video@127.0.0.1:5432/video_conferen
 const char* kDefaultRedis = "redis://127.0.0.1:6379";
 
 void usage(const char* prog) {
-    std::fprintf(stderr,
+    logmsg(
                  "usage: %s [--port N] [--workers N] [--web DIR] [--db CONNINFO] [--redis URL]\n"
                  "  --web DIR       前端静态资源目录, 默认 ../video_client\n"
                  "  --db CONNINFO   PostgreSQL 连接串, 默认取 DATABASE_URL, 再没有就用 %s\n"
@@ -45,7 +46,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (i + 1 >= argc) {
-            std::fprintf(stderr, "%s needs a value\n", a.c_str());
+            logmsg("%s needs a value\n", a.c_str());
             usage(argv[0]);
             return 2;
         }
@@ -60,7 +61,7 @@ int main(int argc, char** argv) {
         } else if (a == "--port") {
             const int n = std::atoi(v.c_str());
             if (n < 1 || n > 65535) {
-                std::fprintf(stderr, "bad port: %s\n", v.c_str());
+                logmsg("bad port: %s\n", v.c_str());
                 return 2;
             }
             port = (uint16_t)n;
@@ -77,21 +78,21 @@ int main(int argc, char** argv) {
 
     std::string dbErr;
     if (!db::init(dbUrl, &dbErr)) {
-        std::fprintf(stderr, "[srv] 数据库初始化失败: %s\n", dbErr.c_str());
-        std::fprintf(stderr, "[srv] 先把库起起来: docker compose up -d db redis\n");
+        logmsg("[srv] 数据库初始化失败: %s\n", dbErr.c_str());
+        logmsg("[srv] 先把库起起来: docker compose up -d db redis\n");
         return 1;
     }
-    std::fprintf(stderr, "[srv] 数据库已就绪\n");
+    logmsg("[srv] 数据库已就绪\n");
 
     // 房间在线状态和信令都在 Redis 里, 没有它这个进程没法工作 (它自己不存任何状态),
     // 所以这里连不上就直接退出, 不要半死不活地跑起来。
     std::string redisErr;
     if (!redis::init(redisUrl, &redisErr)) {
-        std::fprintf(stderr, "[srv] Redis 初始化失败: %s\n", redisErr.c_str());
-        std::fprintf(stderr, "[srv] 先把库起起来: docker compose up -d db redis\n");
+        logmsg("[srv] Redis 初始化失败: %s\n", redisErr.c_str());
+        logmsg("[srv] 先把库起起来: docker compose up -d db redis\n");
         return 1;
     }
-    std::fprintf(stderr, "[srv] Redis 已就绪\n");
+    logmsg("[srv] Redis 已就绪\n");
 
     // 交给浏览器的 ICE 服务器列表。走环境变量而不是命令行参数, 因为 compose 里
     // 用 environment 传最自然, 而且它是部署配置不是日常开关。

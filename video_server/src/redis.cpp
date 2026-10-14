@@ -1,5 +1,7 @@
 #include "redis.h"
 
+#include "metrics.h"
+
 #include <hiredis/hiredis.h>
 
 #include <cstdio>
@@ -104,15 +106,30 @@ redisContext* handle(std::string* err) {
     return t_ctx;
 }
 
-// 跑一条命令。失败时 *err 一定有值; 连接级别的错误顺手把连接丢掉, 下次重连。
+// 跑一条命令。失败时 *err 一定有值; 连接坏了就重连并重试一次, 还不行才把错误抛出去。
+//
+// 为什么必须重试: hiredis 的连接坏了不会立刻知道, 而每个 worker 线程各持一条
+// thread_local 连接 —— Redis 重启后, 每条连接都要等"下一次使用"才发现自己坏了,
+// 于是恢复后的最初十几次请求会分散地各失败一次 (实测: 3 副本 × 4 线程 ≈ 12 条连接,
+// 每条失败一次才各自重连)。重连重试把这个窗口消掉, 恢复变成无感的。
+// 取舍: 命令"已到服务端但回包丢了"时可能重复执行一次, 对本项目的用途
+// (计数 / 信令信箱 / 查询) 可接受。
 Reply run(std::string* err, const std::vector<std::string>& args) {
     redisContext* c = handle(err);
     if (c == nullptr) return Reply();
 
     Reply r = command(c, args);
+    if (!r.ok() && c->err != 0) {  // 连接级错误: 重连 + 重试一次
+        metrics::countRedisError();
+        redisFree(t_ctx);
+        t_ctx = nullptr;
+        c = handle(err);
+        if (c == nullptr) return Reply();
+        r = command(c, args);
+    }
     if (!r.ok()) {
         *err = r.errText();
-        if (c->err != 0) {  // 连接坏了
+        if (c->err != 0) {  // 重试后还坏: 丢掉, 下次重来
             redisFree(t_ctx);
             t_ctx = nullptr;
         }
