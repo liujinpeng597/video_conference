@@ -4,7 +4,7 @@ FROM ubuntu:24.04 AS build
 # 依赖单独一层: 只改 C++ 代码时这一层还能命中缓存
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      build-essential pkg-config libpq-dev libsodium-dev libhiredis-dev libssl-dev curl ca-certificates \
+      build-essential pkg-config libpq-dev libsodium-dev libhiredis-dev libssl-dev librdkafka-dev curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -20,11 +20,12 @@ COPY video_client/ ./video_client/
 FROM ubuntu:24.04
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq5 libsodium23 libhiredis1.1.0 libssl3t64 curl ca-certificates \
+ && apt-get install -y --no-install-recommends libpq5 libsodium23 libhiredis1.1.0 libssl3t64 librdkafka1 curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=build /src/video_server/video_server /app/video_server
+COPY --from=build /src/video_server/event_consumer /app/event_consumer
 COPY --from=build /src/video_client /app/video_client/
 
 EXPOSE 9000

@@ -118,6 +118,9 @@ services:
       # 对外部署时填 turn:<公网 IP 或域名>:3478, 后端按用户签发 12 小时临时凭证
       TURN_SECRET: ${TURN_SECRET:?没设置 TURN_SECRET, 先 cp .env.example .env 并填一个密码}
       TURN_URL: ${TURN_URL:-}
+      # 事件流 (可选): 配了才有事件; Kafka 挂了事件会丢, 但业务完全不受影响
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-meeting.events}
       TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-}
       # 交给浏览器的 ICE 服务器列表。默认只有一个公共 STUN, 本机和局域网够用;
       # 对外提供服务时把 TURN 加进来 (见 video_server/README.md「信令和媒体」):
@@ -233,7 +236,51 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # 事件流 (可选): docker compose --profile events up -d
+  #   Kafka (KRaft 单节点) + 审计消费者 event_consumer (源代码在 video_server/consumer/)。
+  #   应用侧 KAFKA_BROKERS 不配就是关闭; 事件是尽力而为的审计/统计流 (见 events.h)。
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:3.9.1}
+    profiles: ["events"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9092:9092"   # 只绑回环: 本机调试用
+    restart: unless-stopped
+    logging: *default-logging
+
+  events:
+    build:
+      context: .
+      dockerfile: video_server/Dockerfile
+    profiles: ["events"]
+    command: ["./event_consumer"]
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-meeting.events}
+    volumes:
+      - eventdata:/data
+    depends_on:
+      - kafka
+    restart: unless-stopped
+    logging: *default-logging
+
 volumes:
   pgdata:
   promdata:
   grafanadata:
+  kafkadata:
+  eventdata:

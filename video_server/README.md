@@ -58,6 +58,8 @@ cd video_server && make && ./video_server --port 9000 --web ../video_client \
 | `TURN_TTL_SECONDS` | 临时凭证有效期，默认 `43200`（12 小时） |
 | `LOGIN_FAIL_MAX` | 同一账号连续失败几次锁定，默认 `5` |
 | `LOGIN_LOCK_SECONDS` | 失败锁定时长（秒），默认 `900`（15 分钟） |
+| `KAFKA_BROKERS` | Kafka 地址（如 `kafka:9092`）；不配 = 事件流关闭 |
+| `KAFKA_TOPIC` | 事件 topic，默认 `meeting.events` |
 
 ## 结构
 
@@ -71,6 +73,8 @@ presence.*          房间在线状态 + 信令收件箱 -> Redis
 auth.*              账号与会话：Argon2id 密码、令牌签发与校验
 db.*                PostgreSQL：连接、建表、用户/令牌的 SQL
 redis.*             Redis：连接、命令封装 (hiredis)
+events.*            会议生命周期事件 -> Kafka (可选, 尽力而为; 见「事件流」)
+consumer/           事件流消费者: 审计 JSONL (独立二进制 event_consumer)
 random.*            libsodium CSPRNG：令牌和房间号都从这来
 json.*              最小 JSON 工具：扁平对象取字符串/布尔值/原始片段 + 转义
 test/json_test.cpp  json.* 的单测
@@ -301,6 +305,26 @@ docker compose --profile monitoring up -d
 `[2026-10-14 13:37:22.123] [0be35c58deae] [api] POST /api/login -> 401` ——
 多实例混在 `docker compose logs` 里也能分清是谁在说话；nginx 访问日志本来就带 `rt` / `upstream`。
 规模内不上 ELK，`docker logs` + json-file 轮转（10m × 5）就是正解。
+
+## 事件流（Kafka，可选）
+
+会议生命周期事件（`room_created` / `participant_joined` / `participant_left` / `login_failed`）
+通过 librdkafka 发到 `meeting.events`，按房间号分区（同一房间内有序）。消费者
+`event_consumer`（源码在 `consumer/`，独立二进制）把事件落成审计日志 `/data/events.log`，
+同时打到 stdout（`docker compose logs events` 直接能看）。
+
+**信令为什么仍然不走 MQ**：信令是点对点、亚秒级、带 TTL 的邮箱语义 —— 每个参会者一个
+收件箱、过期即弃，Redis List+TTL 就是对的工具；Kafka 是"追加日志"语义，适合审计、
+统计和以后的通知 / 录制转码（作为新的消费者组挂在同一个 topic 上即可），不适合当收件箱。
+
+**定位是尽力而为**：Kafka 挂了事件会丢（`/metrics` 的 `video_events_dropped_total` 能看到），
+但业务请求完全不受影响 —— 审计少几条可以接受，会议卡一秒不行。
+
+```bash
+docker compose --profile events up -d --build   # Kafka(单节点 KRaft) + 消费者
+# 应用侧要发事件, 还需要在 .env 里加 KAFKA_BROKERS=kafka:9092
+bash ops/events-smoke.sh                        # 端到端冒烟 (CI 里也会跑)
+```
 
 ## 自测
 

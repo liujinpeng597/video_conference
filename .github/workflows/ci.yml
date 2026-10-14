@@ -20,7 +20,7 @@ jobs:
   test:
     name: 全链路测试
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +51,10 @@ jobs:
       - name: 收开发形态
         if: always()
         run: docker compose down
+
+      # 事件流端到端: Kafka(profile events) + 审计消费者 (ops/events-smoke.sh)
+      - name: 事件流冒烟
+        run: bash ops/events-smoke.sh
 
   image:
     name: 构建运行镜像

@@ -7,6 +7,7 @@
 video_server/video_server
 video_server/json_test
 video_server/turncred_test
+video_server/event_consumer
 
 # 杂项
 .DS_Store

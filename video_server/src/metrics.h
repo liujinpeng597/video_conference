@@ -33,6 +33,10 @@ void observeRequest(Route r, int status, uint64_t micros);
 void countRedisError();
 void countDbError();
 
+// 事件流 (Kafka) 的发布计数 (见 events.cpp)
+void countEventPublished();
+void countEventDropped();
+
 // 渲染 Prometheus 文本格式
 std::string render();
 

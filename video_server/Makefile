@@ -13,23 +13,30 @@ SODIUM_LIBS := $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 HIREDIS_LIBS := -lhiredis
 # TURN 临时凭证的 HMAC-SHA1 用 OpenSSL 实现 (libsodium 不导出 SHA-1)
 CRYPTO_LIBS  := -lcrypto
+# 事件流 (Kafka): 生产者编进主二进制; 消费者是另一个独立小二进制
+RDKAFKA_LIBS := $(shell pkg-config --libs rdkafka 2>/dev/null || echo -lrdkafka)
 
 # 用单独的变量, 这样在命令行上传 CXXFLAGS=... 也不会把 pkg-config 的结果挤掉
 ALL_CXXFLAGS := $(CXXFLAGS) $(PQ_CFLAGS)
-LDLIBS       := $(PQ_LIBS) $(SODIUM_LIBS) $(HIREDIS_LIBS) $(CRYPTO_LIBS)
+LDLIBS       := $(PQ_LIBS) $(SODIUM_LIBS) $(HIREDIS_LIBS) $(CRYPTO_LIBS) $(RDKAFKA_LIBS)
 
 SRC      := $(wildcard src/*.cpp)
 OBJ      := $(SRC:.cpp=.o)
 DEP      := $(OBJ:.o=.d)
 BIN      := video_server
+# 事件流消费者 (只依赖 librdkafka, 不依赖 pq/sodium/hiredis)
+CONSUMER_BIN := event_consumer
 
 # 单测: json.* 和 turncred.* 各编一个可执行文件 (都不依赖数据库和 Redis)
 TEST_BINS := json_test turncred_test
 
-all: $(BIN)
+all: $(BIN) $(CONSUMER_BIN)
 
 $(BIN): $(OBJ)
 	$(CXX) $(ALL_CXXFLAGS) -o $@ $^ $(LDLIBS)
+
+$(CONSUMER_BIN): consumer/consumer.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(RDKAFKA_LIBS)
 
 %.o: %.cpp
 	$(CXX) $(ALL_CXXFLAGS) -c $< -o $@
@@ -45,7 +52,7 @@ test: $(TEST_BINS)
 	./turncred_test
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) $(TEST_BINS) test/*.d
+	rm -f $(OBJ) $(DEP) $(BIN) $(CONSUMER_BIN) $(TEST_BINS) test/*.d
 
 -include $(DEP)
 

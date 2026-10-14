@@ -6,6 +6,7 @@
 
 #include "auth.h"
 #include "db.h"
+#include "events.h"
 #include "handlers.h"
 #include "redis.h"
 #include "server.h"
@@ -105,6 +106,13 @@ int main(int argc, char** argv) {
     long long turnTtl = 0;
     if (const char* ttl = std::getenv("TURN_TTL_SECONDS")) turnTtl = std::strtoll(ttl, nullptr, 10);
     if (turnUrl && *turnUrl && turnSecret && *turnSecret) setTurnConfig(turnUrl, turnSecret, turnTtl);
+
+    // 事件流 (可选): 配了 KAFKA_BROKERS 才启用。事件是尽力而为的审计/统计流,
+    // 不挡任何业务请求 (取舍见 events.h)。
+    if (const char* kb = std::getenv("KAFKA_BROKERS"); kb != nullptr && *kb != '\0') {
+        const char* kt = std::getenv("KAFKA_TOPIC");
+        events::init(kb, kt != nullptr ? kt : "");
+    }
 
     setWebRoot(web);
     Server server(port, workers);

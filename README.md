@@ -50,7 +50,7 @@ docker compose up -d --build
 | `docker-compose.yml` | 整套编排（含 coturn 中继） |
 | `docker-compose.prod.yml` | 生产覆盖：HTTPS + 80/443 入口 |
 | `.env` | 本机配置：数据库口令 / TURN 密钥 + 镜像站（`.env.example` 是模板） |
-| `ops/` | 运维脚本：备份 / 恢复、降级演练、证书、TLS 冒烟、浏览器 E2E（`loadtest/` 是 k6 压测） |
+| `ops/` | 运维脚本：备份 / 恢复、降级演练、证书、TLS 冒烟、浏览器 E2E、事件流冒烟（`loadtest/` 是 k6 压测） |
 | `DEPLOY.md` | 上线手册：VPS 加固 / 证书 / 备份 cron / 升级回滚 |
 
 ## 现在能做什么

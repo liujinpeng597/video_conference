@@ -159,6 +159,8 @@ Redis 连接数     = 副本数 × 每副本 workers             # hiredis, 每�
 - 实测（8 vCPU 开发机）：950 并发用户 ≈ 950 rps 时整栈只用 ~1.2/8 核，瓶颈排序是
   PostgreSQL 点查 > nginx 转发 > Redis。单机上"加副本"不会明显抬高上限，
   先把这个乘积和 PG 的 `max_connections` 预算算清楚更值。
+- 开了事件流时再加一档：Kafka 单节点（KRaft）约 300~500MB 内存、1~2GB 磁盘；
+  2 核 4G 的 VPS 放得下，但它只服务审计/统计，默认不开（`--profile events`）。
 
 ## 9. 降级矩阵（依赖挂了发生什么）
 
@@ -168,6 +170,7 @@ Redis 连接数     = 副本数 × 每副本 workers             # hiredis, 每�
 | Redis 挂 | `/api/health` 返回 `ok:false`；进房 / 轮询 / 信令 5xx；已开会的画面声音继续，但状态与信令停更、看门狗重连会失败 | 起回 Redis 即恢复；进程启动时连不上 Redis 会拒绝启动（fail-fast，有意的） |
 | nginx 挂 | 全站不可用（唯一入口，单点） | 重启 nginx；真正的入口高可用要第二实例 + VIP / 云 LB（P2） |
 | coturn 挂 | 直连 / 局域网通话不受影响；对称 NAT、企业网的用户连不上 | 重启 coturn；容器内 `turnutils_stunclient -p 3478 127.0.0.1` 自检 |
+| Kafka 挂（开了事件流时） | 业务完全不受影响；审计 / 统计事件在恢复前丢失（尽力而为的语义，见 `events.h`） | 起回 Kafka 即恢复；要更强保证再讨论 `acks=all` 与重试窗口 |
 
 ## 10. Runbook（部署 / 回滚 / 恢复 / 轮换）
 

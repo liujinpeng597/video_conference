@@ -28,6 +28,7 @@
 
 #include "auth.h"
 #include "db.h"
+#include "events.h"
 #include "json.h"
 #include "log.h"
 #include "metrics.h"
@@ -417,6 +418,7 @@ Resp apiLogin(const Request& req) {
     const auth::Result r = auth::login(name, pass, remember);
     if (r.status == auth::Status::BadCreds) {
         noteLoginFail(name);
+        events::userEvent("login_failed", lower(name));  // 审计事件 (可选事件流)
     } else if (r.status == auth::Status::Ok) {
         clearLoginFails(name);
     }
@@ -520,6 +522,10 @@ Resp apiRoomsEnter(const Request& req) {
     std::vector<presence::Member> members;
     switch (presence::enter(req.token, user, raw, &pid, &members, &err)) {
         case presence::Enter::Ok:
+            // 会议生命周期事件 -> Kafka (可选, 尽力而为; 见 events.h)。
+            // 房间号自动分配 = 这次进房顺带建了个新房间。
+            if (!asked) events::roomEvent("room_created", raw, user);
+            events::roomEvent("participant_joined", raw, user);
             break;
         case presence::Enter::Full:
             return errJson(409, "房间满了");
@@ -643,8 +649,15 @@ Resp apiRoomsLeave(const Request& req) {
     Resp fail;
     if (!requireAuth(req, &user, &fail)) return fail;
 
+    // 离开后 session 就没了, 房间号要在 leave 之前问 (拿不到也不挡流程)
+    std::string room;
+    presence::Me me;
+    std::string werr;
+    if (presence::whereAmI(req.token, &me, &werr)) room = me.room;
+
     std::string err;
     if (!presence::leave(req.token, &err)) return errJson(500, "离开房间失败：" + err);
+    if (!room.empty()) events::roomEvent("participant_left", room, user);
     return okJson("{\"ok\":true}");
 }
 
