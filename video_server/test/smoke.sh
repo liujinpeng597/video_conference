@@ -29,6 +29,13 @@ REDIS_IMAGE=${REDIS_IMAGE:-redis:7-alpine}
 REDIS_NAME=video_server_smoke_redis
 REDIS_PORT=56379
 
+# TURN 的断言需要服务端配 TURN; compose 的 test 服务已经给了这两个变量,
+# 这里再兜一个默认值, 保证"直接在机器/WSL 里跑 smoke"也能全过。
+# 第二台实例会用 env -u 去掉它们, 验证"不配 TURN 就不下发"的分支。
+TURN_URL=${TURN_URL:-turn:coturn:3478}
+TURN_SECRET=${TURN_SECRET:-smoke-turn-secret}
+export TURN_URL TURN_SECRET
+
 fail=0
 STARTED_PG=0
 STARTED_REDIS=0
@@ -377,7 +384,7 @@ call GET /api/ice '' "$TOKEN_A"
 check "登录后拿 ICE 配置 200" "200" "$(status)"
 contains "返回了 iceServers" "$(body)" '"iceServers"'
 contains "默认带一个 STUN" "$(body)" 'stun:'
-# 测试服务里配了 TURN_URL=turn:coturn:3478 (见 compose 的 test 服务),
+# 测试服务里配了 TURN_URL=turn:coturn:3478 (见 compose 的 test 服务; 脚本顶部也有默认值兜底),
 # 所以每条响应都应该现场签发一条 TURN 临时凭证
 contains "下发 TURN 服务器" "$(body)" '"urls":"turn:coturn:3478"'
 TURN_USER=$(jstr username)

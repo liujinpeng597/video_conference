@@ -356,8 +356,16 @@ Resp apiRegister(const Request& req) {
 // 这层挡"换着 IP 撞同一个账号", 那层挡"换着账号撞"。
 // 计数放 Redis (多实例共享); Redis 出错时放行不锁 —— 限流是保险丝,
 // 不能因为缓存不可用把所有人挡在门外 (和房间功能的降级思路一致)。
-constexpr long long kLoginMaxFails = 5;
-constexpr long long kLoginLockSecs = 15 * 60;
+// 阈值和时长可以用环境变量覆盖 (LOGIN_FAIL_MAX / LOGIN_LOCK_SECONDS),
+// 部署时想临时收紧或放宽不用重新编译; 不配就用默认值。
+long long envNum(const char* name, long long fallback) {
+    const char* v = std::getenv(name);
+    if (v == nullptr || *v == '\0') return fallback;
+    const long long n = std::strtoll(v, nullptr, 10);
+    return n > 0 ? n : fallback;
+}
+const long long kLoginMaxFails = envNum("LOGIN_FAIL_MAX", 5);
+const long long kLoginLockSecs = envNum("LOGIN_LOCK_SECONDS", 15 * 60);
 
 std::string loginFailKey(const std::string& name) {
     // 用户名大小写不敏感 (注册时 LIN 会撞 lin), 计数也按小写归一
@@ -400,7 +408,8 @@ Resp apiLogin(const Request& req) {
     // 锁定检查放在密码校验之前: 锁定期连 Argon2 都不跑 —— 每次校验固定吃 64MB 内存,
     // 不限住的话一个脚本就能把进程内存打满。
     if (loginLocked(name)) {
-        return errJson(429, "尝试的次数太多了，请 15 分钟后再试");
+        const long long mins = (kLoginLockSecs + 59) / 60;
+        return errJson(429, "尝试的次数太多了，请 " + std::to_string(mins) + " 分钟后再试");
     }
     bool remember = false;
     json::getBool(req.body, "remember", &remember);

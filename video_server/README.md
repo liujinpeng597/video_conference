@@ -56,6 +56,8 @@ cd video_server && make && ./video_server --port 9000 --web ../video_client \
 | `TURN_URL` | TURN 地址（如 `turn:公网IP:3478`）；与 `TURN_SECRET` 一起配好才启用 |
 | `TURN_SECRET` | 与 coturn 共享的密钥，用于签发临时凭证（见「信令和媒体」） |
 | `TURN_TTL_SECONDS` | 临时凭证有效期，默认 `43200`（12 小时） |
+| `LOGIN_FAIL_MAX` | 同一账号连续失败几次锁定，默认 `5` |
+| `LOGIN_LOCK_SECONDS` | 失败锁定时长（秒），默认 `900`（15 分钟） |
 
 ## 结构
 
