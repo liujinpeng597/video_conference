@@ -313,6 +313,9 @@ Resp errText(int code, const std::string& msg) {
 // "并发请求刚好在删除前把旧结果回填" 这一种, 上界 60 秒, 接受。
 std::string sessCacheKey(const std::string& token) { return "sess:" + token; }
 
+// 定义在下面 (用到 envNum), 这里先声明
+bool tokenRateLimited(const std::string& token);
+
 bool requireAuth(const Request& req, std::string* user, Resp* fail) {
     // 先问缓存: 命中直接过; 未命中或 Redis 故障都走下面的慢路径
     // (err 非空 = Redis 故障, 当作没命中, 不能因为缓存把请求打挂)
@@ -320,27 +323,33 @@ bool requireAuth(const Request& req, std::string* user, Resp* fail) {
     std::string cacheErr;
     if (redis::get(sessCacheKey(req.token), &cached, &cacheErr) && !cached.empty()) {
         *user = cached;
-        return true;
+    } else {
+        // 慢路径: 查库 (也只有这里会给出 401 / 500)。失败结果不进缓存。
+        std::string err;
+        switch (auth::whoAmI(req.token, user, &err)) {
+            case auth::Check::Ok: {
+                // 回填缓存, 尽力而为: 写失败只是下次还走慢路径
+                std::string fillErr;
+                redis::setEx(sessCacheKey(req.token), *user, 60, &fillErr);
+                break;
+            }
+            case auth::Check::Error:
+                logmsg("[api] 查会话失败: %s\n", err.c_str());
+                *fail = errJson(500, "服务端查会话失败");
+                return false;
+            case auth::Check::BadToken:
+            default:
+                *fail = errJson(401, "登录状态失效了，重新登录一下");
+                return false;
+        }
     }
 
-    // 慢路径: 查库 (也只有这里会给出 401 / 500)。失败结果不进缓存。
-    std::string err;
-    switch (auth::whoAmI(req.token, user, &err)) {
-        case auth::Check::Ok: {
-            // 回填缓存, 尽力而为: 写失败只是下次还走慢路径
-            std::string fillErr;
-            redis::setEx(sessCacheKey(req.token), *user, 60, &fillErr);
-            return true;
-        }
-        case auth::Check::Error:
-            logmsg("[api] 查会话失败: %s\n", err.c_str());
-            *fail = errJson(500, "服务端查会话失败");
-            return false;
-        case auth::Check::BadToken:
-        default:
-            *fail = errJson(401, "登录状态失效了，重新登录一下");
-            return false;
+    // 按令牌限流 (放在鉴权之后: 只对合法令牌计数, 未登录的请求交给 nginx 按 IP 挡)
+    if (tokenRateLimited(req.token)) {
+        *fail = errJson(429, "请求太频繁了，歇一下再试");
+        return false;
     }
+    return true;
 }
 
 // auth::Result -> HTTP 响应
@@ -423,6 +432,31 @@ void noteLoginFail(const std::string& name) {
 void clearLoginFails(const std::string& name) {
     std::string err;
     redis::del(loginFailKey(name), &err);
+}
+
+// ------------------------------------------------------------------ 令牌限流
+// nginx 那层按 IP 限流, 挡不住"NAT 后一个 IP 挤着很多真人用户"和"单个账号被脚本刷"。
+// 这层按令牌计数 (计数放 Redis, 多实例共享): 每个令牌每 PER_TOKEN_WINDOW_SECONDS 秒
+// 最多 PER_TOKEN_RPM 次。阈值可用环境变量覆盖, 不配用默认; PER_TOKEN_RPM=0 关闭这层。
+// Redis 故障时放行 —— 限流是保险丝, 不能因为它挂了把所有人挡在门外 (和登录锁定同思路)。
+const long long kTokenRpm = envNum("PER_TOKEN_RPM", 600);
+const long long kTokenWindowSecs = envNum("PER_TOKEN_WINDOW_SECONDS", 60);
+
+bool tokenRateLimited(const std::string& token) {
+    if (kTokenRpm <= 0) return false;
+    // key 直接用令牌本体: 和 sessCacheKey 一样, 令牌是 64 位十六进制随机串, 在内部信任域
+    const std::string key = "rl:tok:" + token;
+    long long n = 0;
+    std::string err;
+    if (!redis::incrWithTtl(key, kTokenWindowSecs, &n, &err)) {
+        if (!err.empty()) logmsg("[api] 令牌限流计数出错, 本次放行: %s\n", err.c_str());
+        return false;
+    }
+    if (n > kTokenRpm) {
+        metrics::countRateLimited();
+        return true;
+    }
+    return false;
 }
 
 Resp apiLogin(const Request& req) {

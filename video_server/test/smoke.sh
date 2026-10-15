@@ -41,9 +41,11 @@ STARTED_PG=0
 STARTED_REDIS=0
 PID=""
 PID2=""
+PID3=""
 cleanup() {
     [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null
     [ -n "$PID2" ] && kill -9 "$PID2" 2>/dev/null
+    [ -n "$PID3" ] && kill -9 "$PID3" 2>/dev/null
     [ "$STARTED_PG" = 1 ] && docker rm -f "$PG_NAME" >/dev/null 2>&1
     [ "$STARTED_REDIS" = 1 ] && docker rm -f "$REDIS_NAME" >/dev/null 2>&1
     return 0
@@ -747,6 +749,51 @@ kill -TERM "$PID2"
 wait "$PID2"
 check "第二台实例优雅退出" "0" "$?"
 PID2=""
+
+echo
+echo "---- 按令牌限流 ----"
+# 单起一个实例, 把每个令牌每分钟的额度压到 3 (PER_TOKEN_RPM=3), 验证:
+# 额度内放行 / 超额 429 / 计数按令牌分而不是全局 / 删掉 key(模拟窗口到期)后恢复。
+PORT3=$((PORT + 2))
+PER_TOKEN_RPM=3 PER_TOKEN_WINDOW_SECONDS=60 ./video_server --port "$PORT3" --workers 1 --web "$WEB" \
+    --db "$TEST_DB" --redis "$TEST_REDIS" >>"$LOG" 2>&1 &
+PID3=$!
+sleep 0.8
+kill -0 "$PID3" 2>/dev/null || { echo "FAIL - 限流实例没起来"; fail=1; }
+
+RL_USER="rl$SUF"
+CALL_PORT=$PORT3 call POST /api/register "{\"username\":\"$RL_USER\",\"password\":\"hunter2\"}"
+RL_TOKEN=$(jstr token)
+[ -n "$RL_TOKEN" ] && echo "ok   - 限流实例上注册成功" || { echo "FAIL - 注册失败"; fail=1; }
+
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN"
+check "额度内第 1 次 200" "200" "$(status)"
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN"
+check "额度内第 2 次 200" "200" "$(status)"
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN"
+check "额度内第 3 次 200" "200" "$(status)"
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN"
+check "第 4 次超额 429" "429" "$(status)"
+contains "429 带中文提示" "$(body)" '频繁'
+
+# 换个令牌照样有额度: 说明计数是按令牌分的, 不是全局一刀切
+CALL_PORT=$PORT3 call POST /api/register "{\"username\":\"${RL_USER}b\",\"password\":\"hunter2\"}"
+RL_TOKEN2=$(jstr token)
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN2"
+check "换个令牌照样有额度 (按令牌计数)" "200" "$(status)"
+
+# 删掉计数 key 模拟窗口到期 (等价于 60 秒后自动恢复), 老令牌又能用了
+exec 9<>/dev/tcp/"$RHOST"/"$RPORT"
+printf 'DEL rl:tok:%s\r\n' "$RL_TOKEN" >&9
+timeout 3 head -c 4 <&9 >/dev/null
+exec 9<&- 9>&-
+CALL_PORT=$PORT3 call GET /api/me '' "$RL_TOKEN"
+check "窗口重置后老令牌恢复 200" "200" "$(status)"
+
+kill -TERM "$PID3"
+wait "$PID3"
+check "限流实例优雅退出" "0" "$?"
+PID3=""
 
 echo
 echo "---- 收尾 ----"

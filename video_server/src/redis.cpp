@@ -213,6 +213,11 @@ redis.call('LTRIM', KEYS[2], -tonumber(ARGV[5]), -1)
 redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
 return seq)";
 
+// 固定窗口计数: 首次 INCR 到的 key 顺手设 TTL, 两步在一个脚本里跑完 (见 redis.h 的注释)。
+constexpr char kIncrWithTtlScript[] = R"(local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])) end
+return n)";
+
 }  // namespace
 
 bool init(const std::string& url, std::string* err) {
@@ -322,6 +327,18 @@ bool incr(const std::string& key, long long* out, std::string* err) {
     err->clear();
     Reply r = run(err, {"INCR", key});
     if (!r.ok()) return false;
+    *out = r.r->integer;
+    return true;
+}
+
+bool incrWithTtl(const std::string& key, long long ttlSec, long long* out, std::string* err) {
+    err->clear();
+    Reply r = run(err, {"EVAL", kIncrWithTtlScript, "1", key, std::to_string(ttlSec)});
+    if (!r.ok()) return false;
+    if (r.r->type != REDIS_REPLY_INTEGER) {
+        *err = "incrWithTtl: 脚本没返回整数";
+        return false;
+    }
     *out = r.r->integer;
     return true;
 }

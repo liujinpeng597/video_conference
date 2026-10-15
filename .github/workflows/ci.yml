@@ -56,6 +56,10 @@ jobs:
       - name: 事件流冒烟
         run: bash ops/events-smoke.sh
 
+      # 告警闭环: Prometheus -> Alertmanager -> alert-sink, 灌一条合成告警断言送达 (ops/alert-drill.sh)
+      - name: 告警闭环演练
+        run: bash ops/alert-drill.sh
+
   image:
     name: 构建运行镜像
     runs-on: ubuntu-latest

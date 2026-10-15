@@ -110,7 +110,7 @@ services:
       dockerfile: video_server/Dockerfile
     # 每个副本的 worker 线程数: 默认 0 = 自动取核数。小机器上 3 副本 × 核数 会互相超卖,
     # 用 APP_WORKERS=1~2 收窄 (连接数公式见 DEPLOY.md「容量参数」)。
-    command: ["./video_server", "--port", "9000", "--workers", "${APP_WORKERS:-0}", "--web", "video_client"]
+    command: ["./video_server", "--port", "9000", "--workers", "${APP_WORKERS:-0}", "--web", "video_client", "--migrations", "migrations"]
     environment:
       DATABASE_URL: postgresql://video:${POSTGRES_PASSWORD:?没设置 POSTGRES_PASSWORD, 先 cp .env.example .env 并填一个密码}@db:5432/video_conference
       REDIS_URL: redis://redis:6379
@@ -233,6 +233,34 @@ services:
       - grafanadata:/var/lib/grafana
     ports:
       - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+    logging: *default-logging
+
+  # 告警闭环: Prometheus 触发规则 -> Alertmanager 分组/路由 -> 通知渠道。
+  # 本机默认渠道是 alert-sink (收到就打印), 不需要任何云服务就能把链路跑通并可测。
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.28.1}
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "127.0.0.1:9093:9093"
+    restart: unless-stopped
+    logging: *default-logging
+
+  # 告警的本机终点: 收到 webhook 就打印。看: docker compose logs -f alert-sink
+  # 生产把这个 URL 换成真通知渠道 (钉钉/飞书/Slack) 即可, 规则和路由都不用改。
+  alert-sink:
+    image: ${ALERT_SINK_IMAGE:-python:3.12-alpine}
+    profiles: ["monitoring"]
+    command: ["python", "/sink/alert-sink.py", "8080"]
+    volumes:
+      - ./monitoring:/sink:ro
+    ports:
+      - "127.0.0.1:9099:8080"   # 只绑回环, 方便本机 curl 自查
     restart: unless-stopped
     logging: *default-logging
 

@@ -8,12 +8,13 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace db {
 
 // 进程启动时调一次 (在起线程池之前, 所以 g_conninfo 之后只读):
 // 连接数据库 + 建表。数据库还没起来时会重试一小会儿。
-bool init(const std::string& conninfo, std::string* err);
+bool init(const std::string& conninfo, const std::string& migrations_dir, std::string* err);
 
 struct User {
     long long id = 0;
@@ -51,5 +52,17 @@ bool countUsers(long long* out, std::string* err);
 
 // 顺手清掉过期的令牌 (登录/注册时做一次就够, 失败只记日志不报错)
 void purgeExpired();
+
+// --- 迁移机制内部用, 别处不要调 ---
+// 执行一段 SQL (可以是用分号分隔的多条语句, 走 libpq 简单查询协议)。不看结果集。
+bool execStatement(const std::string& sql, std::string* err);
+
+// 执行一条带 $1..$n 参数的语句, 不看结果集。
+bool execParams(const std::string& sql, const std::vector<std::string>& params, std::string* err);
+
+// 执行一条带参数的查询, 第一行第一列写入 *out。查询成功但没有数据行时 *out 为空串。
+// 返回 false = 查询本身失败 (*err 有原因), 与"没有数据行"是两回事。
+bool queryScalar(const std::string& sql, const std::vector<std::string>& params, std::string* out,
+                 std::string* err);
 
 }  // namespace db

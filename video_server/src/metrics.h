@@ -37,6 +37,9 @@ void countDbError();
 void countEventPublished();
 void countEventDropped();
 
+// 被按令牌限流挡下的请求数 (见 handlers.cpp 的 tokenRateLimited)
+void countRateLimited();
+
 // 渲染 Prometheus 文本格式
 std::string render();
 

@@ -299,9 +299,17 @@ docker compose --profile monitoring up -d
 # Grafana 里有预置面板「同频 · 总览」: 流量/延迟、错误率、房间数与登录失败
 ```
 
-告警规则在 `monitoring/prometheus/alerts.yml`（实例掉线、5xx 比例超 1%、依赖错误增长），
-先在 Prometheus 的 Alerts 页面看；接 Alertmanager 或 Grafana 通知渠道是下一步。
-外部探活（Uptime 服务盯 `/api/health` 与证书到期）等有公网部署时再加。
+告警规则在 `monitoring/prometheus/alerts.yml`（实例掉线、5xx 比例超 1%、p95 延迟、依赖错误增长）。
+触发后交给 Alertmanager 分组 / 路由 / 抑制，再送到通知渠道 —— 本机默认渠道是内置的 `alert-sink`
+（收到就打印），不接任何云服务就能把"越线 -> 规则 -> 路由 -> 送达"整条闭环跑通并可测：
+
+```bash
+docker compose --profile monitoring up -d   # prometheus + grafana + alertmanager + alert-sink
+bash ops/alert-drill.sh                     # 闭环演练: 灌一条合成告警, 断言送达 sink (CI 里也跑)
+```
+
+换成真渠道（钉钉 / 飞书 / Slack）时只改 `monitoring/alertmanager/alertmanager.yml` 里的 webhook url，
+规则和路由都不用动。外部探活（Uptime 服务盯 `/api/health` 与证书到期）等有公网部署时再加。
 
 **日志**：所有 stderr 日志带毫秒时间戳和实例名，例如
 `[2026-10-14 13:37:22.123] [0be35c58deae] [api] POST /api/login -> 401` ——
@@ -349,7 +357,12 @@ ICE/TURN 临时凭证签发、保持登录与续期、令牌吊销、
 序号去重、超长拒绝、并发顺序原子化）、路由与错误码、静态资源与路径穿越、大文件整包送达、
 **多实例互通（两个独立进程共享 Redis：互相看得到房间、信令双向可达、人数上限跨实例生效）**、
 4 个并发注册抢同一个用户名（唯一约束）、5 条并发请求、连接回收、
-**重启服务端后账号和会话还在**、SIGTERM 优雅退出。
+**重启服务端后账号和会话还在**、**按令牌限流（额度内 200 / 超额 429 / 计数按令牌分 / 删 key 后恢复）**、
+SIGTERM 优雅退出。
+
+另外几个端到端演练在 `ops/`（CI 里都会跑）：`smoke-tls.sh`（生产形态 TLS + 限流）、
+`events-smoke.sh`（Kafka 事件流）、`alert-drill.sh`（告警闭环）、`restore-drill.sh`（备份恢复）。
+见 `ops/README.md`。
 
 前端那侧的音视频通路验证在浏览器里跑（`--headless=new` + `--use-fake-device-for-media-stream`）：
 两个和三个标签页进同一房间，断言对端 `<video>` 真的解码出了帧（`videoWidth > 0` 且在播），
@@ -363,10 +376,18 @@ ICE/TURN 临时凭证签发、保持登录与续期、令牌吊销、
   明文 HTTP，所以生产上不要绕过 nginx 直接暴露 9000。
 - TURN 已内建：compose 里跑 coturn，后端签发 12 小时临时凭证。对外部署时把 `TURN_URL`
   指到公网地址即可；本机和局域网直连就够了。
+- 数据库 schema 走 `migrations/` 下的 `NNNN_*.sql`：进程启动时按 `schema_migrations` 表
+  幂等执行（没跑过才跑，按文件名排序）。加表 / 改表就加一个迁移文件，重启自动生效；
+  回滚 = 切回旧 tag（旧代码不认新表 / 列，但留着不碍事）。
+- 发布与回滚：打 `v*` tag 触发 CI 构建镜像；CD 模板（`.github/workflows/deploy.yml` +
+  `ops/deploy.sh`）按 tag 部署到 VPS，自带健康检查和"起不来自动切回上一版"。
+  在仓库配好 `SSH_HOST` / `SSH_USER` / `SSH_KEY` 三个 secret 即启用（没配就跳过，不会弄红流水线）。
 - **mesh 只能撑到 4-6 人。** 每个人都给其他每个人发一路，上行带宽是 (N-1) 倍。
   要开更多人得换 SFU（mediasoup / LiveKit / Janus），那是另一个量级的项目，
   媒体转发、simulcast、拥塞控制都得自己来或者接现成的。
-- 登录限流有两层：nginx 按 IP（见 `nginx/snippets/ratelimit-zones.conf`）+ 后端按账号失败锁定。
+- 限流有三层：nginx 按 IP（见 `nginx/snippets/ratelimit-zones.conf`）+ 后端按账号失败锁定 +
+  **后端按令牌**（每个令牌每 `PER_TOKEN_WINDOW_SECONDS` 秒最多 `PER_TOKEN_RPM` 次，默认 60s / 600 次；
+  见 `handlers.cpp` 的 `tokenRateLimited`，Redis 故障时放行）。
 - 会话是固定过期，不滑动续期。前端已经在 401 时自动用长期令牌换新的，所以体感上不会中途被踢。
 - 信令消息是**尽力投递**：Redis 挂了就全丢，客户端那一路协商会停在半路。
   前端已经处理了这种情况（发现房间没了就退回大厅并提示重进）；协商卡在半路的连接会被看门狗

@@ -62,7 +62,7 @@ docker compose up -d --build
 - 麦克风 / 摄像头开关、屏幕上的本地预览、邀请链接
 - 弱网自愈：切网自动 ICE 重启，协商卡住的连接由看门狗自动重建重试
 - 三个后端实例 + nginx 轮询，杀掉一台不影响服务
-- 登录 / 注册按 IP 限流 + 按账号失败锁定（防爆破）
+- 限流三层：nginx 按 IP + 后端按账号失败锁定 + 后端按令牌（防爆破、防单账号被脚本刷）
 - 屏幕共享（`replaceTrack` 无缝切换，对端不重新协商）
 
 **还不能：**
@@ -86,3 +86,5 @@ docker compose run --build --rm test
 
 可观测性（可选）：`docker compose --profile monitoring up -d` —— Prometheus 在
 `127.0.0.1:9090`、Grafana 在 `127.0.0.1:3001`（预置「同频 · 总览」面板与告警规则）。
+告警闭环 = Prometheus -> Alertmanager -> 通知渠道（本机默认是 `alert-sink`，收到就打印），
+演练 `bash ops/alert-drill.sh`（CI 里也跑）。部署 / 升级 / 回滚见 `DEPLOY.md` 和 `ops/README.md`。

@@ -41,6 +41,10 @@ bool lKeepLast(const std::string& key, long long n, std::string* err);
 // 全局单调计数器。多台后端不能各发各的序号, 信令的 seq 必须全局唯一且递增。
 bool incr(const std::string& key, long long* out, std::string* err);
 
+// 计数 + 首次设 TTL, 原子完成 (固定窗口限流用)。
+// 分开两条命令的话, 进程若在 INCR 和 EXPIRE 之间挂掉, key 就永不过期 -> 被永久限死。
+bool incrWithTtl(const std::string& key, long long ttlSec, long long* out, std::string* err);
+
 // 原子地往信令收件箱里追加一条: 取序号 -> 拼条目 -> 入队 -> 裁剪 -> 续期,
 // 五步在一个 Lua 脚本里跑完, Redis 执行脚本期间不掺别的命令。
 // 为什么必须原子: 取号和入队要是分两步, 并发下会"序号小的条目后入队",

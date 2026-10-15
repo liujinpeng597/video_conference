@@ -1,0 +1,65 @@
+# 持续交付 (CD 模板): 打一个 v* tag 就把那一版发到 VPS 上。
+#
+# 这是"模板": 真机参数走 GitHub secrets, 没配就整条跳过 (不会把流水线弄红)。
+# 需要在仓库 Settings -> Secrets and variables -> Actions 里加:
+#   SSH_HOST     服务器地址 (IP 或域名)
+#   SSH_USER     部署用户 (见 DEPLOY.md, 别用 root)
+#   SSH_KEY      对应私钥 (整段, 含 BEGIN/END 行)
+#   DEPLOY_PATH  服务器上的仓库路径 (可选, 默认 /opt/video_conference)
+#
+# 真正的部署动作在服务器上的 ops/deploy.sh (按 tag 切代码 + 起 compose + 健康检查 +
+# 失败自动回滚)。本工作流只负责把 tag 送过去 —— 这样本地手动发布和 CI 发布走同一段逻辑。
+name: CD
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要部署的 tag (如 v0.2.0); 留空则用触发时的 ref'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 部署到 VPS (模板)
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+    steps:
+      # 模板的默认态: 没配部署参数就跳过, 保持流水线是绿的
+      - name: "门禁: 没配部署参数就跳过"
+        id: gate
+        run: |
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ] || [ -z "$SSH_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 SSH_HOST/SSH_USER/SSH_KEY, 跳过部署 (配置方法见 DEPLOY.md「持续交付 CD」)"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 解析要发的 tag
+        id: rel
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${{ github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 通过 SSH 触发服务器上的部署 (ops/deploy.sh)
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          TARGET_DIR="${DEPLOY_PATH:-/opt/video_conference}"
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" "cd '$TARGET_DIR' && bash ops/deploy.sh '$TAG'"

@@ -1,0 +1,38 @@
+# Alertmanager: 把 Prometheus 的告警规则接起来 —— 告警闭环的"最后一公里"。
+#
+# 本机默认发给 alert-sink (compose 里那个小容器, 收到就把告警打印出来), 于是不接任何
+# 云服务也能把"指标越线 -> 规则触发 -> 路由 -> 通知送达"整条链路跑通, 并且可测
+# (演练脚本 ops/alert-drill.sh)。
+#
+# 生产换成真渠道时只改 receivers 里的 webhook url: 钉钉 / 飞书 / Slack / PagerDuty
+# 都收 webhook, 路由和规则都不用动。
+route:
+  receiver: local-sink
+  group_by: [alertname, instance]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 3h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: local-sink
+      group_wait: 0s        # 严重告警立刻发, 不等分组窗口
+      repeat_interval: 1h
+    - matchers:
+        - severity = "warning"
+      receiver: local-sink
+      group_wait: 30s
+
+# 一条 critical 还在时压掉同名的 warning, 免得一件事刷两条屏
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: [alertname]
+
+receivers:
+  - name: local-sink
+    webhook_configs:
+      - url: http://alert-sink:8080/
+        send_resolved: true

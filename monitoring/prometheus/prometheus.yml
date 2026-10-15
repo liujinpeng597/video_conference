@@ -7,6 +7,13 @@ global:
 rule_files:
   - alerts.yml
 
+# 规则触发后交给 Alertmanager 去"通知到人" (告警闭环的最后一公里)。
+# 路由 / 抑制 / 通知渠道都在 monitoring/alertmanager/alertmanager.yml 里配。
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 scrape_configs:
   - job_name: video_server
     # 用 dns_sd 而不是 static_configs: compose 里 app 有 3 个副本, 服务名解析出 3 个 IP。

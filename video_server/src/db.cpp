@@ -1,5 +1,6 @@
 #include "log.h"
 #include "db.h"
+#include "migration.h"
 
 #include "metrics.h"
 
@@ -85,13 +86,19 @@ PGresult* query(std::string* err, const char* sql, const std::vector<std::string
     return r;
 }
 
-bool execStatement(const char* sql, std::string* err) {
+const char* kindName(TokenKind k) { return k == TokenKind::Remember ? "remember" : "session"; }
+
+}  // namespace
+
+// --- 迁移机制内部用 ---
+
+bool execStatement(const std::string& sql, std::string* err) {
     PGconn* c = handle(err);
     if (c == nullptr) {
         metrics::countDbError();
         return false;
     }
-    PGresult* r = PQexec(c, sql);
+    PGresult* r = PQexec(c, sql.c_str());
     if (PQstatus(c) == CONNECTION_BAD) {  // 连接坏了: 重连 + 重试一次
         metrics::countDbError();
         PQclear(r);
@@ -99,7 +106,7 @@ bool execStatement(const char* sql, std::string* err) {
         t_conn = nullptr;
         c = handle(err);
         if (c == nullptr) return false;
-        r = PQexec(c, sql);
+        r = PQexec(c, sql.c_str());
     }
     const ExecStatusType st = PQresultStatus(r);
     const bool ok = (st == PGRES_COMMAND_OK || st == PGRES_TUPLES_OK);
@@ -111,34 +118,24 @@ bool execStatement(const char* sql, std::string* err) {
     return ok;
 }
 
-// 建表。都是幂等的, 每次启动都跑一遍。
-// 以后加字段就往这里补一句 ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...。
-const char* kSchema = R"SQL(
-CREATE TABLE IF NOT EXISTS users (
-    id            BIGSERIAL   PRIMARY KEY,
-    username      TEXT        NOT NULL,
-    username_lc   TEXT        NOT NULL UNIQUE,
-    password_hash TEXT        NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+bool execParams(const std::string& sql, const std::vector<std::string>& params, std::string* err) {
+    PGresult* r = query(err, sql.c_str(), params);
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
 
-CREATE TABLE IF NOT EXISTS auth_tokens (
-    token_hash TEXT        PRIMARY KEY,
-    user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind       TEXT        NOT NULL CHECK (kind IN ('session', 'remember')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at TIMESTAMPTZ NOT NULL
-);
+bool queryScalar(const std::string& sql, const std::vector<std::string>& params, std::string* out,
+                 std::string* err) {
+    out->clear();
+    PGresult* r = query(err, sql.c_str(), params);
+    if (r == nullptr) return false;
+    if (PQntuples(r) > 0 && PQnfields(r) > 0) *out = PQgetvalue(r, 0, 0);
+    PQclear(r);
+    return true;
+}
 
-CREATE INDEX IF NOT EXISTS auth_tokens_user_idx ON auth_tokens (user_id);
-CREATE INDEX IF NOT EXISTS auth_tokens_expires_idx ON auth_tokens (expires_at);
-)SQL";
-
-const char* kindName(TokenKind k) { return k == TokenKind::Remember ? "remember" : "session"; }
-
-}  // namespace
-
-bool init(const std::string& conninfo, std::string* err) {
+bool init(const std::string& conninfo, const std::string& migrations_dir, std::string* err) {
     g_conninfo = conninfo;
 
     // 默认 connect_timeout 是 0 (等操作系统超时, 可能两分钟), 这里压到 3 秒,
@@ -155,9 +152,12 @@ bool init(const std::string& conninfo, std::string* err) {
     for (int i = 0; i < kTries; ++i) {
         std::string e;
         if (handle(&e) != nullptr) {
-            if (execStatement(kSchema, &e)) return true;
-            *err = "建表失败: " + e;  // 连上了但建不了表, 重试没意义
-            return false;
+            // 连上了就跑迁移 (幂等)。建表/改表失败属于配置或迁移文件问题, 重试没意义。
+            if (!migration::run(migrations_dir, err)) {
+                *err = "迁移失败: " + *err;
+                return false;
+            }
+            return true;
         }
         last = e;
         if (i + 1 < kTries) {
@@ -255,7 +255,8 @@ bool countUsers(long long* out, std::string* err) {
     return true;
 }
 
-void purgeExpired() {    std::string err;
+void purgeExpired() {
+    std::string err;
     PGresult* r = query(&err, "DELETE FROM auth_tokens WHERE expires_at < now()", {});
     if (r != nullptr) {
         PQclear(r);

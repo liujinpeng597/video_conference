@@ -1,5 +1,6 @@
-# 告警规则。现在没有接 Alertmanager / 通知渠道, 先在 Prometheus 的 Alerts 页面看;
-# 接通知是下一步 (Alertmanager 或 Grafana 告警都行, 规则不用改)。
+# 告警规则。触发后交给 Alertmanager 路由/分组/抑制, 再送到通知渠道
+# (monitoring/alertmanager/alertmanager.yml)。本机默认的渠道是 alert-sink
+# 那个打印容器; 闭环演练见 ops/alert-drill.sh。
 groups:
   - name: video-conference
     rules:
@@ -38,3 +39,16 @@ groups:
           severity: warning
         annotations:
           summary: "PostgreSQL 错误在增长 (登录/会话会受影响)"
+
+      # p95 延迟: 轮询模型下正常在 1~2ms 量级 (见 ops/loadtest), 500ms 是很宽松的线,
+      # 越过基本意味着依赖 (PG/Redis) 或者线程池出问题了。
+      - alert: HighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(video_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "接口 p95 延迟超过 500ms"
+          description: "最近 5 分钟 p95 延迟 {{ $value }}s"

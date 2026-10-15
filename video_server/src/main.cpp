@@ -20,6 +20,7 @@ void usage(const char* prog) {
     logmsg(
                  "usage: %s [--port N] [--workers N] [--web DIR] [--db CONNINFO] [--redis URL]\n"
                  "  --web DIR       前端静态资源目录, 默认 ../video_client\n"
+                 "  --migrations DIR 迁移文件目录, 默认 ../video_server/migrations\n"
                  "  --db CONNINFO   PostgreSQL 连接串, 默认取 DATABASE_URL, 再没有就用 %s\n"
                  "  --redis URL     Redis 连接串, 默认取 REDIS_URL, 再没有就用 %s\n",
                  prog, kDefaultDb, kDefaultRedis);
@@ -31,6 +32,7 @@ int main(int argc, char** argv) {
     uint16_t port = 9000;
     int workers = 0;  // 0 = 按 CPU 核数
     std::string web = "../video_client";
+    std::string migrations = "../video_server/migrations";
 
     std::string dbUrl;
     if (const char* env = std::getenv("DATABASE_URL")) dbUrl = env;
@@ -68,6 +70,8 @@ int main(int argc, char** argv) {
             port = (uint16_t)n;
         } else if (a == "--workers") {
             workers = std::atoi(v.c_str());
+        } else if (a == "--migrations") {
+            migrations = v;
         } else {
             usage(argv[0]);
             return 2;
@@ -78,7 +82,7 @@ int main(int argc, char** argv) {
     auth::init();
 
     std::string dbErr;
-    if (!db::init(dbUrl, &dbErr)) {
+    if (!db::init(dbUrl, migrations, &dbErr)) {
         logmsg("[srv] 数据库初始化失败: %s\n", dbErr.c_str());
         logmsg("[srv] 先把库起起来: docker compose up -d db redis\n");
         return 1;

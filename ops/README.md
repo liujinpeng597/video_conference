@@ -1,4 +1,4 @@
-# ops: 备份与恢复演练
+# ops: 运维脚本（备份 / 部署 / 演练）
 
 PostgreSQL 里存着账号和会话——这是整套系统**唯一丢不起的数据**（房间状态和信令在 Redis，
 本来就是易失的, 重建即可）。下面三个脚本都通过 compose 的一次性容器跑,
@@ -60,6 +60,28 @@ schtasks /create /tn "video_conference 备份" /sc daily /st 03:00 /tr "powershe
 |---|---|---|---|---|
 | 2026-10-14 | `video_conference-20261014-043906.dump` | 161 账号 / 20.8 KB | <1 秒 | 通过（含抽查账号哈希一致性、行数对照） |
 | 2026-10-14 | `video_conference-20261014-045446.dump` | 173 账号 / 22.6 KB | <1 秒 | 通过（复跑；抽查哈希一致、行数对照通过） |
+
+## 部署与回滚（CD）
+
+`ops/deploy.sh` 在 VPS 上执行：按 tag 切代码 -> `docker compose -f docker-compose.yml
+-f docker-compose.prod.yml up -d --build` -> 健康检查 -> 起不来就自动切回上一版。
+CD 工作流 `.github/workflows/deploy.yml` 在打 `v*` tag 时调它；在仓库配好
+`SSH_HOST` / `SSH_USER` / `SSH_KEY`（可选 `DEPLOY_PATH`）几个 secret 即启用，没配就跳过。
+
+```bash
+bash ops/deploy.sh v0.2.0     # 在服务器上手动发布 / 回滚到某个 tag
+```
+
+## 告警闭环（Prometheus -> Alertmanager -> 通知）
+
+`ops/alert-drill.sh`：起 Alertmanager + `alert-sink`，灌一条合成告警，断言 sink 收到了它 ——
+证明"指标越线 -> 规则触发 -> 路由 -> 送达"整条链路是通的。不接任何云服务；换成真渠道
+（改 `monitoring/alertmanager/alertmanager.yml` 里的 webhook url）后本演练照样适用。
+
+```bash
+docker compose --profile monitoring up -d   # 含 alertmanager / alert-sink
+bash ops/alert-drill.sh
+```
 
 ## 浏览器 E2E（音视频通路自动化）
 

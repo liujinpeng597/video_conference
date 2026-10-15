@@ -41,6 +41,7 @@ std::atomic<uint64_t> g_redisErr{0};
 std::atomic<uint64_t> g_dbErr{0};
 std::atomic<uint64_t> g_evtPub{0};
 std::atomic<uint64_t> g_evtDrop{0};
+std::atomic<uint64_t> g_rateLimited{0};
 
 const std::chrono::steady_clock::time_point g_start = std::chrono::steady_clock::now();
 
@@ -92,6 +93,7 @@ void countRedisError() { g_redisErr.fetch_add(1, std::memory_order_relaxed); }
 void countDbError() { g_dbErr.fetch_add(1, std::memory_order_relaxed); }
 void countEventPublished() { g_evtPub.fetch_add(1, std::memory_order_relaxed); }
 void countEventDropped() { g_evtDrop.fetch_add(1, std::memory_order_relaxed); }
+void countRateLimited() { g_rateLimited.fetch_add(1, std::memory_order_relaxed); }
 
 std::string render() {
     std::string out;
@@ -149,6 +151,9 @@ std::string render() {
     appendLine(&out, "# TYPE video_events_dropped_total counter");
     appendLine(&out, "video_events_dropped_total %llu",
                (unsigned long long)g_evtDrop.load(std::memory_order_relaxed));
+    appendLine(&out, "# TYPE video_ratelimited_total counter");
+    appendLine(&out, "video_ratelimited_total %llu",
+               (unsigned long long)g_rateLimited.load(std::memory_order_relaxed));
 
     char host[64] = {0};
     if (gethostname(host, sizeof(host) - 1) != 0) std::snprintf(host, sizeof(host), "?");

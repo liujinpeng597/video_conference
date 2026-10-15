@@ -27,7 +27,8 @@ WORKDIR /app
 COPY --from=build /src/video_server/video_server /app/video_server
 COPY --from=build /src/video_server/event_consumer /app/event_consumer
 COPY --from=build /src/video_client /app/video_client/
+COPY --from=build /src/video_server/migrations /app/migrations/
 
 EXPOSE 9000
 # 前端静态文件由这个进程直接发, 所以只需要一个端口
-CMD ["./video_server", "--port", "9000", "--web", "video_client"]
+CMD ["./video_server", "--port", "9000", "--web", "video_client", "--migrations", "migrations"]

@@ -121,12 +121,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec nginx nginx
 - [ ] `sudo ss -lunp | grep 3478` 有监听
 - [ ] 连续输错密码 20 次 → 429（nginx 按 IP 限流）；换账号再连错 5 次 → 该账号被锁
 - [ ] `docker kill video_conference-app-1` 后页面还能用（3 副本 + nginx 重试）
+- [ ] `docker compose --profile monitoring up -d` 后 `bash ops/alert-drill.sh` 通过（告警能到渠道）
+- [ ] 打一个 `v*` tag，CD 把新版发上去且健康检查通过（或手动 `bash ops/deploy.sh <tag>`）
 
 ## 6. 升级与回滚
 
-- 升级 = 切到新 tag：`git fetch --tags && git checkout v0.2.0 && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
-- 回滚 = 切回旧 tag 再 `up -d --build`。数据库没有迁移框架（只做向后兼容的
-  `ALTER TABLE ... IF NOT EXISTS`），**破坏性变更前必须先跑一次备份**
+- **一键（推荐）**：在服务器上 `bash ops/deploy.sh v0.2.0` —— 按 tag 切代码、起 compose、
+  健康检查，起不来自动切回上一版。CD 工作流（`.github/workflows/deploy.yml`）打 `v*` tag 时
+  隔着 SSH 调同一个脚本；配好 `SSH_HOST` / `SSH_USER` / `SSH_KEY` secret 即启用。
+- **手动**：升级 = `git fetch --tags && git checkout v0.2.0 && docker compose -f docker-compose.yml
+  -f docker-compose.prod.yml up -d --build`；回滚 = 切回旧 tag 再 `up -d --build`。
+- **数据库迁移**：schema 走 `video_server/migrations/` 下的 `NNNN_*.sql`，进程启动时按
+  `schema_migrations` 表幂等执行（没跑过才跑）。迁移要写成可重复执行的（`IF NOT EXISTS` 一类）；
+  回滚代码后新表 / 新列留着不影响旧代码。**破坏性变更（删列 / 改类型）前必须先跑一次备份。**
 - 备选路线：直接用 CI 推的 GHCR 镜像（`docker login ghcr.io` 后把 compose 里的
   `build:` 换成 `image:`），服务器上不需要编译器
 
@@ -174,8 +181,9 @@ Redis 连接数     = 副本数 × 每副本 workers             # hiredis, 每�
 
 ## 10. Runbook（部署 / 回滚 / 恢复 / 轮换）
 
-- **部署**：`git fetch --tags && git checkout v0.x.y && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
-- **回滚**：切回上一个 tag 再 `up -d --build`（代码和镜像都在 tag 里；数据库只做向后兼容变更，破坏性变更前先备份）
+- **部署**：`bash ops/deploy.sh v0.x.y`（切 tag + 起 compose + 健康检查 + 失败自动回滚；CD 工作流也调它）
+- **回滚**：`bash ops/deploy.sh <上一个 tag>`，或手动切回旧 tag 再 `up -d --build`（代码和镜像都在 tag 里）
+- **看告警**：Prometheus -> Alertmanager -> 通知渠道（本机默认是 `alert-sink`）；闭环演练 `bash ops/alert-drill.sh`
 - **恢复备份**：见 `ops/README.md`（`docker compose run --rm backup /ops/restore.sh <dump>`，恢复进新库后按打印的步骤人工切换）
 - **轮换数据库口令**：改 `.env` 的 `POSTGRES_PASSWORD` → `docker compose up -d --force-recreate db` → `docker compose up -d --force-recreate app`
 - **证书续期**：见第 3 节的 cron（证书过期 = 浏览器拒开摄像头，必须装）
