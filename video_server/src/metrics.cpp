@@ -23,8 +23,8 @@ const char* kRouteName[kRoutes] = {"login", "register", "me",    "rooms",  "stat
                                    "other"};
 
 // 固定状态码表 (分布看得准); 表外的一律归 "other"
-constexpr int kStatuses = 16;
-const int kStatusCode[kStatuses] = {200, 201, 204, 301, 302, 304, 400, 401,
+constexpr int kStatuses = 17;
+const int kStatusCode[kStatuses] = {200, 201, 204, 301, 302, 304, 400, 401, 403,
                                     404, 405, 409, 413, 429, 431, 500, 503};
 
 int statusSlot(int code) {
@@ -66,7 +66,8 @@ Route classify(const std::string& path) {
     if (path == "/api/rooms/state") return Route::State;
     if (path == "/api/rooms/signal") return Route::Signal;
     if (path == "/api/rooms/chat") return Route::Chat;
-    if (path == "/api/rooms/enter" || path == "/api/rooms/leave" || path == "/api/rooms/hand")
+    if (path == "/api/rooms/enter" || path == "/api/rooms/leave" || path == "/api/rooms/hand" ||
+        path == "/api/rooms/kick")
         return Route::Rooms;
     if (path == "/api/ice") return Route::Ice;
     if (path == "/api/health") return Route::Health;

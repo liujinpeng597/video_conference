@@ -369,6 +369,7 @@ button, input { font-family: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  position: relative;
   height: 56px;
   padding: 0 clamp(16px, 2.5vw, 24px);
   background: var(--surface);
@@ -841,6 +842,54 @@ button, input { font-family: inherit; }
   12% { opacity: 1; transform: translateY(0) scale(1); }
   100% { opacity: 0; transform: translateY(-46px) scale(1.05); }
 }
+
+/* 房间内的临时提示条 (比如"主持人把所有人静音了")。放在顶栏正中间:
+   顶栏永远不被聊天抽屉遮住 (抽屉从顶栏下面开始), 提示才不会被吃掉。 */
+.roomtoast {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 60%;
+  padding: 6px 14px;
+  border-radius: var(--r-full);
+  background: rgb(0 0 0 / .72);
+  color: var(--on-video);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 主持人标签 (贴在名字贴条里) */
+.tile__host {
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--brand);
+  color: var(--on-brand);
+  font-size: 11px;
+}
+
+/* 主持人才能看到的"移出"按钮 (放左上角, 避开右上角的举手标志) */
+.tile__kick {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: rgb(0 0 0 / .55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s var(--ease);
+}
+.tile:hover .tile__kick, .tile__kick:focus-visible { opacity: 1; }
+.tile__kick:hover { background: var(--danger); }
+@media (hover: none) { .tile__kick { opacity: 1; } }  /* 触屏没有 hover, 直接显示 */
 
 /* ------------------------------------------------------------------ 动效 */
 @media (prefers-reduced-motion: no-preference) {

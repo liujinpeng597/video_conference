@@ -26,6 +26,9 @@ constexpr long long kChatMax = 50;
 constexpr long long kChatTtlSec = 600;
 constexpr size_t kMaxChatText = 500;  // 单条上限 (字节)
 constexpr char kSep = '\x1f';
+// 房间 hash 里存"主持人 token"的字段名 (主持人 = 建房的人)。token 是十六进制串, 带 '@'
+// 的名字不会撞上; 它不是成员 —— parseMember 解析不出来会当成"不在", peersJson 会跳过。
+constexpr char kHostField[] = "@host";
 
 int64_t nowMs() {
     using namespace std::chrono;
@@ -162,6 +165,8 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     if (live == 0) {
         if (!redis::del(chatKey(room), err)) return Enter::Error;
         if (!redis::del(chatSeqKey(room), err)) return Enter::Error;
+        // 建房的人就是主持人 (房间 hash 里一个特殊字段, 跟着房间 TTL 一起过期)
+        if (!redis::hSet(roomKey(room), kHostField, token, err)) return Enter::Error;
     }
 
     // 上面的 HGETALL 是在写我之前跑的, 所以自己得补进去
@@ -188,10 +193,12 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 }
 
 bool sync(const std::string& token, uint64_t since, std::string* room,
-          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* err) {
+          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
+          std::string* err) {
     room->clear();
     members->clear();
     msgs->clear();
+    hostPid->clear();
 
     Me me;
     if (!whereAmI(token, &me, err)) return err->empty();  // 不在房间 = 正常情况
@@ -241,6 +248,24 @@ bool sync(const std::string& token, uint64_t since, std::string* room,
         m.live = true;
         m.hand = hand;
         members->push_back(std::move(m));
+    }
+
+    // 主持人 = 建房的人 (房间 hash 里的特殊字段)。把 token 翻译成 pid 下发给前端;
+    // 主持人已离开时这个 pid 找不到, 留空 = 房间里暂时没有主持人。
+    std::string hostToken;
+    for (const redis::Field& f : fields) {
+        if (f.name == kHostField) {
+            hostToken = f.value;
+            break;
+        }
+    }
+    if (!hostToken.empty()) {
+        for (const Member& m : *members) {
+            if (m.token == hostToken && m.live) {
+                *hostPid = m.pid;
+                break;
+            }
+        }
     }
 
     std::vector<std::string> raw;
@@ -356,11 +381,60 @@ bool leave(const std::string& token, std::string* err) {
     if (!redis::del(sessionKey(token), err)) return false;
     if (!redis::del(mailboxKey(token), err)) return false;
 
-    // 房间空了就把 key 删掉, 不然 /api/health 的房间数会虚高 (反正也有 TTL 兜底)
-    long long n = 0;
+    // 看看走之后还剩谁 (顺带处理主持人交接)。这些是尽力而为的收尾, 失败不影响"离开"本身。
     std::string ignore;
-    if (redis::hLen(roomKey(me.room), &n, &ignore) && n == 0) redis::del(roomKey(me.room), &ignore);
+    std::vector<redis::Field> fields;
+    if (redis::hGetAll(roomKey(me.room), &fields, &ignore)) {
+        const int64_t now = nowMs();
+        std::string hostToken;
+        std::string successor;
+        int liveMembers = 0;
+        for (const redis::Field& f : fields) {
+            if (f.name == kHostField) {
+                hostToken = f.value;
+                continue;
+            }
+            const Member m = parseMember(f.name, f.value, now);
+            if (!m.live) continue;
+            ++liveMembers;
+            if (successor.empty()) successor = m.token;
+        }
+        if (liveMembers == 0) {
+            // 房间空了: 整把 key 删掉 (含主持人字段), 不然房间数会虚高 (反正也有 TTL 兜底)
+            redis::del(roomKey(me.room), &ignore);
+        } else if (hostToken == token && !successor.empty()) {
+            // 主持人走了但还有人: 把主持人交给剩下的第一个人, 房间不至于没人管
+            redis::hSet(roomKey(me.room), kHostField, successor, &ignore);
+        }
+    }
     return true;
+}
+
+Kick kick(const std::string& byToken, const std::string& targetPid, std::string* targetToken,
+          std::string* err) {
+    targetToken->clear();
+    Me me;
+    if (!whereAmI(byToken, &me, err)) return err->empty() ? Kick::NotInRoom : Kick::Error;
+
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return Kick::Error;
+
+    const int64_t now = nowMs();
+    std::string hostToken;
+    std::string victim;
+    for (const redis::Field& f : fields) {
+        if (f.name == kHostField) {
+            hostToken = f.value;
+            continue;
+        }
+        const Member m = parseMember(f.name, f.value, now);
+        if (m.live && m.pid == targetPid) victim = m.token;
+    }
+    if (hostToken != byToken) return Kick::NotHost;  // 只有主持人能踢人
+    if (victim.empty()) return Kick::NoSuchPeer;
+    if (!leave(victim, err)) return Kick::Error;
+    *targetToken = victim;
+    return Kick::Ok;
 }
 
 bool activeRooms(long long* out, std::string* err) {

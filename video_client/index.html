@@ -180,6 +180,7 @@
           <code class="roomcode">{{ room }}</code>
           <span class="timer">{{ elapsed }}</span>
         </div>
+        <p class="roomtoast" role="status" v-if="notice">{{ notice }}</p>
         <div class="topbar__right">
           <span class="chip">{{ participants.length }} 人在线</span>
         </div>
@@ -202,7 +203,7 @@
               <p>{{ media.stream ? '摄像头关着' : '没有摄像头画面' }}</p>
             </div>
             <span class="tile__hand" v-if="myHand" title="已举手" aria-label="已举手">✋</span>
-            <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
+            <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
           <article class="tile" v-for="p in remotes" :key="p.id">
@@ -213,7 +214,11 @@
               <p>{{ peerHint(p.id) }}</p>
             </div>
             <span class="tile__hand" v-if="p.hand" title="已举手" aria-label="已举手">✋</span>
-            <p class="tile__tag">{{ p.name }}<span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span></p>
+            <button class="tile__kick" v-if="amHost" type="button" :aria-label="'移出 ' + p.name"
+                    title="移出会议" @click="kickMember(p.id)">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
+            </button>
+            <p class="tile__tag">{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span></p>
           </article>
         </div>
 
@@ -275,6 +280,10 @@
         <button class="ctl" type="button" :class="{ 'ctl--share-on': sharing }" @click="toggleShare">
           <svg class="icon" aria-hidden="true"><use :href="sharing ? '#ic-screen-share-off' : '#ic-screen-share'"></use></svg>
           <span class="ctl__label">{{ sharing ? '停止共享' : '共享屏幕' }}</span>
+        </button>
+        <button class="ctl" type="button" v-if="amHost" @click="muteAll" aria-label="全体静音">
+          <svg class="icon" aria-hidden="true"><use href="#ic-microphone-off"></use></svg>
+          <span class="ctl__label">全体静音</span>
         </button>
         <button class="ctl" type="button" :class="{ 'ctl--on': myHand }" @click="toggleHand" :aria-label="myHand ? '放下手' : '举手'">
           <svg class="icon" aria-hidden="true"><use href="#ic-hand-stop"></use></svg>

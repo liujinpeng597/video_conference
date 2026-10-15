@@ -67,8 +67,10 @@ Enter enter(const std::string& token, const std::string& user, const std::string
             std::string* pid, std::vector<Member>* members, std::string* err);
 
 // 心跳 + 取回成员列表和信令收件箱。不在房间里时 *room 为空。
+// *hostPid 是主持人的 pid (没有主持人时为空串) —— 主持人 = 建房的人。
 bool sync(const std::string& token, uint64_t since, std::string* room,
-          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* err);
+          std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
+          std::string* err);
 
 enum class Send { Delivered, NoSuchPeer, NotInRoom, Error };
 
@@ -90,6 +92,12 @@ bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>
 // 举手 / 放手。房间成员表里带一个 hand 标志, 心跳时保留 (sync 里单独处理)。
 enum class Hand { Ok, NotInRoom, Error };
 Hand setHand(const std::string& token, bool raised, std::string* err);
+
+// 主持人把某个成员移出房间 (踢人)。只有主持人能踢, 只能踢同房间活着的人。
+// *targetToken 回传被踢者的令牌, 调用方要用它清掉会话校验缓存 (见 handlers.cpp 的 kick 处理)。
+enum class Kick { Ok, NotHost, NoSuchPeer, NotInRoom, Error };
+Kick kick(const std::string& byToken, const std::string& targetPid, std::string* targetToken,
+          std::string* err);
 
 bool leave(const std::string& token, std::string* err);
 

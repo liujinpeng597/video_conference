@@ -507,6 +507,62 @@ try {
   if (reactOk) console.log('表情反应: 对端收到了 👍');
   else { failed = true; console.error('表情反应断言失败: 对端没收到反应'); }
 
+  // 阶段 6: 主持人 —— tab0 是建房的人 = 主持人; 只有它能看到"移出"按钮
+  await activate(cdp, pages[0].sessionId);
+  const host0 = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `({ am: (${VM}).amHost, kicks: document.querySelectorAll('.tile__kick').length })`,
+  );
+  await activate(cdp, pages[1].sessionId);
+  const host1 = await evalIn(
+    cdp,
+    pages[1].sessionId,
+    `({ am: (${VM}).amHost, kicks: document.querySelectorAll('.tile__kick').length })`,
+  );
+  if (host0.am && !host1.am && host0.kicks === 2 && host1.kicks === 0) {
+    console.log('主持人: 只有建房者能看到"移出"按钮, 别人看不到');
+  } else {
+    failed = true;
+    console.error(`主持人断言失败: ${JSON.stringify({ host0, host1 })}`);
+  }
+
+  // 全体静音: 主持人发一条信令, 各端把自己静音
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(${VM}).muteAll()`);
+  let muted = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    const mic = await evalIn(cdp, pages[1].sessionId, `(${VM})?.media?.mic`);
+    if (mic === false) { muted = true; break; }
+    await sleep(400);
+  }
+  if (muted) console.log('全体静音: 主持人一键, 对端被静音');
+  else { failed = true; console.error('全体静音断言失败: 对端没被静音'); }
+
+  // 移出成员: 主持人踢掉最后一个标签页, 它下一拍会发现房间空了 + removed 标志, 回大厅
+  await activate(cdp, pages[0].sessionId);
+  const remoteIds = await evalIn(cdp, pages[0].sessionId, `(${VM}).remotes.map((p) => p.id)`);
+  const victim = remoteIds[remoteIds.length - 1];
+  await evalIn(cdp, pages[0].sessionId, `(${VM}).kickMember(${JSON.stringify(victim)})`);
+  let kicked = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[2].sessionId);
+    kicked = await evalIn(
+      cdp,
+      pages[2].sessionId,
+      `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`,
+    );
+    if (kicked.view === 'lobby') break;
+    await sleep(500);
+  }
+  if (kicked && kicked.view === 'lobby' && /移出/.test(kicked.err)) {
+    console.log(`移出成员: 被踢的人回到大厅 (提示: ${kicked.err})`);
+  } else {
+    failed = true;
+    console.error(`移出成员断言失败: ${JSON.stringify(kicked)}`);
+  }
+
   // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
   if (process.env.E2E_SHOT) {
     await activate(cdp, pages[1].sessionId);

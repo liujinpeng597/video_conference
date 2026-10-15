@@ -631,6 +631,56 @@ call POST /api/rooms/leave '{}' "$TOKEN_H1"
 call POST /api/rooms/leave '{}' "$TOKEN_H2"
 
 echo
+echo "---- 主持人 / 移出成员 ----"
+# 主持人 = 建房的人。权限只在服务端校验 (客户端那个"移除"按钮只是 UI)。
+USER_K1="host$SUF"
+USER_K2="kick$SUF"
+call POST /api/register "{\"username\":\"$USER_K1\",\"password\":\"hunter2\"}"
+TOKEN_K1=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_K2\",\"password\":\"hunter2\"}"
+TOKEN_K2=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_K1"
+KROOM=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$KROOM\"}" "$TOKEN_K2"
+check "两个账号进了同一个房间" "2" "$(jcount name)"
+
+call GET "/api/rooms/state?since=0" '' "$TOKEN_K1"
+KPID1=$(jpid true)
+check "建房者拿到 host = 自己" "$KPID1" "$(jstr host)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_K2"
+KPID2=$(jpid true)
+check "另一人看到的主持人就是建房者" "$KPID1" "$(jstr host)"
+
+call POST /api/rooms/kick "{\"pid\":\"$KPID1\"}" "$TOKEN_K2"
+check "非主持人踢人 403" "403" "$(status)"
+
+call POST /api/rooms/kick "{\"pid\":\"$KPID2\"}" "$TOKEN_K1"
+check "主持人踢人 200" "200" "$(status)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_K2"
+contains "被踢后房间清空" "$(body)" '"room":""'
+contains "带上 removed 标记 (说明是被移出, 不是服务端重启)" "$(body)" '"removed":true'
+
+call POST /api/rooms/kick "{\"pid\":\"$KPID2\"}" "$TOKEN_K1"
+check "再踢已不在的人 404" "404" "$(status)"
+call POST /api/rooms/kick "{\"pid\":\"$KPID2\"}" "$TOKEN_K2"
+check "被踢过的人不在房间踢人 409" "409" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_K1"
+
+# 主持人离开后, 角色交接给剩下的人 (房间不至于没人管)
+USER_K3="tr$SUF"
+call POST /api/register "{\"username\":\"$USER_K3\",\"password\":\"hunter2\"}"
+TOKEN_K3=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_K1"
+KROOM2=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$KROOM2\"}" "$TOKEN_K3"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_K3"
+KPID3=$(jpid true)
+call POST /api/rooms/leave '{}' "$TOKEN_K1"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_K3"
+check "主持人走后角色交给剩下的人" "$KPID3" "$(jstr host)"
+call POST /api/rooms/leave '{}' "$TOKEN_K3"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"

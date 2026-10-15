@@ -123,6 +123,11 @@
         reactions: [],   // [{ key, emoji }] 2.5 秒后自动移除
         reactionChoices: ['👍', '👏', '🎉', '😂', '❤️', '✋'],
 
+        // 主持人: host 是主持人的 pid (来自服务端); notice 是房间里的临时提示条
+        host: '',
+        notice: '',
+        noticeTimer: 0,
+
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
         copied: false,
@@ -145,6 +150,8 @@
         const me = this.participants.find((p) => p.me);
         return !!(me && me.hand);
       },
+      // 我是不是主持人 (host 是服务端下发的 pid)
+      amHost() { return !!this.myPid && this.host === this.myPid; },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -460,6 +467,7 @@
 
       applyRoom(r) {
         if (typeof r.room === 'string') this.room = r.room;
+        if (typeof r.host === 'string') this.host = r.host;
         if (Array.isArray(r.participants)) {
           this.participants = r.participants;
           const me = r.participants.find((p) => p.me);
@@ -480,6 +488,7 @@
         this.chatError = '';
         this.reactions = [];
         this.emojiOpen = false;
+        this.notice = '';
       },
 
       toggleChat() {
@@ -569,12 +578,43 @@
         }, 2500);
       },
 
+      // ------------------------------------------------------------- 主持人
+      // 主持人 = 建房的人 (服务端从房间状态里下发 host pid)。这里只做两件事:
+      // 全体静音 (广播一条信令, 各自把自己静音) 和 移出成员 (走服务端, 只有主持人有权)。
+      flash(msg) {
+        this.notice = msg;
+        clearTimeout(this.noticeTimer);
+        this.noticeTimer = setTimeout(() => { this.notice = ''; }, 4000);
+      },
+      muteAll() {
+        for (const p of this.remotes) this.sendSignal(p.id, 'mute-all', {});
+        this.applyMuteAll();  // 自己也算一个
+      },
+      applyMuteAll() {
+        const track = this.media.stream && this.media.stream.getAudioTracks()[0];
+        if (track) track.enabled = false;
+        this.media.mic = false;
+        this.flash('主持人把所有人静音了');
+      },
+      async kickMember(pid) {
+        try {
+          await this.authed('POST', '/api/rooms/kick', { pid });
+          this.flash('已把该成员移出会议');
+          this.scheduleSync(0);
+        } catch (err) {
+          if (err.dead) { this.forgetSession(); this.goAuth(); return; }
+          this.flash(err.message || '移出失败');
+        }
+      },
+
       // ------------------------------------------------------- 轮询 / 同步
       stopTimers() {
         clearTimeout(this.syncTimer);
         clearInterval(this.clockTimer);
+        clearTimeout(this.noticeTimer);
         this.syncTimer = 0;
         this.clockTimer = 0;
+        this.noticeTimer = 0;
       },
 
       scheduleSync(delay) {
@@ -601,7 +641,8 @@
           // 我们的 session 就没了, 服务端会回一个空房间号。这时候留在会议界面
           // 只会看到一个没有房间号的空会议室, 不如老老实实退回大厅重进。
           if (this.view === 'room' && !this.room) {
-            this.droppedOut('房间状态没了（服务端重启过），重新加入一次');
+            this.droppedOut(r.removed ? '你被主持人移出了会议'
+                                      : '房间状态没了（服务端重启过），重新加入一次');
             return;
           }
         } catch (err) {
@@ -778,6 +819,10 @@
         // 表情反应是瞬时效果, 不建 PeerConnection
         if (msg.kind === 'reaction') {
           this.floatReaction(msg.from, (msg.payload || {}).emoji);
+          return;
+        }
+        if (msg.kind === 'mute-all') {
+          if (msg.from === this.host) this.applyMuteAll();  // 只认主持人发的
           return;
         }
         const state = this.ensureCall(msg.from);

@@ -147,6 +147,7 @@ const char* statusText(int code) {
         case 204: return "No Content";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";
+        case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
         case 409: return "Conflict";
@@ -613,8 +614,9 @@ Resp apiRoomsState(const Request& req) {
     std::string room;
     std::vector<presence::Member> members;
     std::vector<presence::Signal> msgs;
+    std::string hostPid;
     std::string err;
-    if (!presence::sync(req.token, since, &room, &members, &msgs, &err)) {
+    if (!presence::sync(req.token, since, &room, &members, &msgs, &hostPid, &err)) {
         return errJson(500, "同步房间状态失败：" + err);
     }
 
@@ -665,8 +667,21 @@ Resp apiRoomsState(const Request& req) {
     }
     chatArr += ']';
 
+    // 不在房间里了: 看看是不是刚被主持人移出 (踢人时留过标记), 好给前端一个准确的原因
+    bool removed = false;
+    if (room.empty()) {
+        std::string v;
+        std::string e;
+        if (redis::get("kicked:" + req.token, &v, &e) && !v.empty()) {
+            removed = true;
+            redis::del("kicked:" + req.token, &e);
+        }
+    }
+
     return okJson("{\"room\":" + json::quote(room) +
                   ",\"participants\":" + peersJson(members, req.token) +
+                  ",\"host\":" + json::quote(hostPid) +
+                  ",\"removed\":" + (removed ? "true" : "false") +
                   ",\"seq\":" + std::to_string(seq) +
                   ",\"messages\":" + arr +
                   ",\"chat\":" + chatArr +
@@ -755,6 +770,38 @@ Resp apiRoomsHand(const Request& req) {
         default:
             return errJson(500, "切换举手失败：" + err);
     }
+}
+
+// 主持人把某个成员移出房间。被踢的人的会话会被一并清掉, 下一次轮询拿到 401 -> 前端回登录页。
+Resp apiRoomsKick(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string pid;
+    if (!json::getString(req.body, "pid", &pid) || pid.empty()) return errJson(400, "请求体里要有 pid");
+
+    std::string targetToken;
+    std::string err;
+    switch (presence::kick(req.token, pid, &targetToken, &err)) {
+        case presence::Kick::Ok:
+            break;
+        case presence::Kick::NotHost:
+            return errJson(403, "只有主持人能移出成员");
+        case presence::Kick::NoSuchPeer:
+            return errJson(404, "房间里没有这个人");
+        case presence::Kick::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "移出失败：" + err);
+    }
+    // 留一个"被移出"的标记 (60 秒): 被踢的人下一拍轮询会发现房间空了, 靠这个标记知道
+    // 原因是"被主持人移出", 而不是误报"服务端重启了"。标志用一次就删。
+    if (!targetToken.empty()) {
+        std::string markErr;
+        redis::setEx("kicked:" + targetToken, "1", 60, &markErr);
+    }
+    return okJson("{\"ok\":true}");
 }
 
 Resp apiIce(const Request& req) {
@@ -853,6 +900,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/hand") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsHand(req);
+    }
+    if (req.path == "/api/rooms/kick") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsKick(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

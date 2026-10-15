@@ -166,10 +166,11 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
 | GET | `/api/me` | - | `{"user"}` |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
-| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表 + 我的信令收件箱 + 房间聊天（前端每 0.4-2 秒轮一次） |
+| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表 + 信令收件箱 + 房间聊天 + `host` / `removed`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
+| POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
@@ -191,6 +192,13 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   保住 `hand`，否则别人一举手就会被你下一拍心跳冲掉。
 - 表情反应：**没有服务端存储**。它是瞬时效果，前端直接用一个信令广播（`kind="reaction"`，
   `payload={"emoji":…}`）发给同房间所有人，各端本地浮一下；`kind` 本来就是自由字符串。
+- 主持人 = **建房的人**（房间 hash 里一个特殊字段存 host token，跟着房间 TTL 一起过期；
+  主持人离开且还有人时，角色交接给剩下的第一个人）。`/api/rooms/state` 下发 `host`（主持人 pid）
+  和 `removed`（这一拍发现自己已被移出）。
+- 全体静音是**前端信令广播**（`kind="mute-all"`，各端把自己静音），服务端不存状态；
+  移出成员（`POST /api/rooms/kick`）走服务端强校验：只有主持人能调。被移出的人**登录还在**，
+  只是房间状态被清空，前端据此回大厅 —— 带 `removed` 标记，提示"被主持人移出"，
+  不会误报成"服务端重启"。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；
