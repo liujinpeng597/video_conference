@@ -33,6 +33,10 @@ bool hSet(const std::string& key, const std::string& field, const std::string& v
 bool hDel(const std::string& key, const std::string& field, std::string* err);
 bool hLen(const std::string& key, long long* out, std::string* err);
 
+// 集合 (给"记录某账号当前有哪些会话校验缓存"用)
+bool sAdd(const std::string& key, const std::string& member, std::string* err);
+bool sMembers(const std::string& key, std::vector<std::string>* out, std::string* err);
+
 bool rPush(const std::string& key, const std::string& value, std::string* err);
 bool lRange(const std::string& key, std::vector<std::string>* out, std::string* err);
 // 只保留最后 n 条 (LTRIM -n -1)

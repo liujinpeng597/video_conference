@@ -664,6 +664,34 @@ try {
     console.log(`截图: ${process.env.E2E_SHOT}`);
   }
 
+  // 阶段 7: 同一账号"在别处"再登录一次 -> 这个标签页应该被挤下线 (回登录页 + 说明原因)
+  const reLogin = await fetch(`${BASE}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: `e2e${SUFFIX}1`, password: 'e2e-pass-123' }),
+  });
+  if (!reLogin.ok) {
+    failed = true;
+    console.error(`挤下线用例: 二次登录失败 HTTP ${reLogin.status}`);
+  }
+  let out = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    out = await evalIn(
+      cdp,
+      pages[1].sessionId,
+      `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`,
+    );
+    if (out.view === 'auth') break;
+    await sleep(500);
+  }
+  if (out && out.view === 'auth' && /登录/.test(out.err)) {
+    console.log(`挤下线: 被顶掉的标签页回到登录页 (提示: ${out.err})`);
+  } else {
+    failed = true;
+    console.error(`挤下线断言失败: ${JSON.stringify(out)}`);
+  }
+
   if (failed) {
     for (let i = 0; i < pages.length; i++) {
       const errs = pages[i].consoleErrors.slice(-3);

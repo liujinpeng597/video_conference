@@ -315,6 +315,18 @@ Resp errText(int code, const std::string& msg) {
 // 代价: 吊销最多晚 60 秒生效。正常退出登录会同步删缓存; 残余窗口只有
 // "并发请求刚好在删除前把旧结果回填" 这一种, 上界 60 秒, 接受。
 std::string sessCacheKey(const std::string& token) { return "sess:" + token; }
+// 这个账号当前有哪些会话校验缓存键 —— 换新会话时按它把旧的清掉 (见 clearSessCache)
+std::string sessIndexKey(const std::string& user) { return "sessidx:" + lower(user); }
+
+// 清掉某个账号的会话校验缓存。换新会话 / 退出登录时调。
+// 不清的话, 被挤下线的客户端还能靠缓存继续过鉴权最多 60 秒 —— 等于没挤掉。
+void clearSessCache(const std::string& user) {
+    std::string err;
+    std::vector<std::string> keys;
+    if (!redis::sMembers(sessIndexKey(user), &keys, &err)) return;  // 尽力而为
+    for (const std::string& k : keys) redis::del(k, &err);
+    redis::del(sessIndexKey(user), &err);
+}
 
 // 定义在下面 (用到 envNum), 这里先声明
 bool tokenRateLimited(const std::string& token);
@@ -334,6 +346,9 @@ bool requireAuth(const Request& req, std::string* user, Resp* fail) {
                 // 回填缓存, 尽力而为: 写失败只是下次还走慢路径
                 std::string fillErr;
                 redis::setEx(sessCacheKey(req.token), *user, 60, &fillErr);
+                // 顺手把这枚缓存键记到账号名下: 换新会话时要能按账号把旧会话的缓存一起清掉
+                redis::sAdd(sessIndexKey(*user), sessCacheKey(req.token), &fillErr);
+                redis::expire(sessIndexKey(*user), 12 * 3600, &fillErr);
                 break;
             }
             case auth::Check::Error:
@@ -386,7 +401,9 @@ Resp apiRegister(const Request& req) {
     }
     bool remember = false;
     json::getBool(req.body, "remember", &remember);
-    return fromAuthResult(auth::registerUser(name, pass, remember));
+    const auth::Result r = auth::registerUser(name, pass, remember);
+    if (r.status == auth::Status::Ok) clearSessCache(r.username);  // 顶掉别处可能有的旧会话
+    return fromAuthResult(r);
 }
 
 // ------------------------------------------------------------------ 登录失败锁定
@@ -482,6 +499,7 @@ Resp apiLogin(const Request& req) {
         events::userEvent("login_failed", lower(name));  // 审计事件 (可选事件流)
     } else if (r.status == auth::Status::Ok) {
         clearLoginFails(name);
+        clearSessCache(r.username);  // 一次登录只留一个会话: 把别处旧会话的缓存清掉
     }
     return fromAuthResult(r);
 }
@@ -492,7 +510,9 @@ Resp apiSessionResume(const Request& req) {
     if (!json::getString(req.body, "remember_token", &rememberToken)) {
         return errJson(400, "请求体里要有 remember_token");
     }
-    return fromAuthResult(auth::resume(rememberToken));
+    const auth::Result r = auth::resume(rememberToken);
+    if (r.status == auth::Status::Ok) clearSessCache(r.username);  // 旧会话的缓存一起清掉
+    return fromAuthResult(r);
 }
 
 Resp apiLogout(const Request& req) {

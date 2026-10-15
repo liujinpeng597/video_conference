@@ -301,6 +301,14 @@
         this.errors = {};
       },
 
+      // 服务端不认这个会话了 (被另一台设备挤下线 / 过期 / 退出): 本地清干净回登录页, 并说明原因。
+      // 一次登录只留一个会话 —— 换设备登录会把这边顶掉, 所以文案点一下"可能别处登录了"。
+      sessionDead(msg) {
+        this.forgetSession();
+        this.goAuth();
+        this.errors = { form: msg || '登录状态已失效（可能在另一台设备登录了，或已过期），重新登录一下' };
+      },
+
       // 用长期令牌换一个新的短会话。成功返回 true。
       async tryResume() {
         const remember = localStorage.getItem(STORE_REMEMBER);
@@ -466,9 +474,7 @@
           this.syncCalls();
         } catch (err) {
           if (err.dead) {
-            this.forgetSession();
-            this.goAuth();
-            this.errors = { form: '登录状态失效了，重新登录一下' };
+            this.sessionDead('登录状态已失效，重新登录一下');
           } else {
             this.errors = { form: err.message };
           }
@@ -562,8 +568,7 @@
           this.scrollChat();
         } catch (err) {
           if (err.dead) {
-            this.forgetSession();
-            this.goAuth();
+            this.sessionDead();
             return;
           }
           this.chatError = err.message || '消息没发出去';
@@ -580,7 +585,7 @@
           await this.authed('POST', '/api/rooms/hand', { raised: !this.myHand });
           this.scheduleSync(0);
         } catch (err) {
-          if (err.dead) { this.forgetSession(); this.goAuth(); }
+          if (err.dead) { this.sessionDead(); }
         }
       },
 
@@ -624,7 +629,7 @@
           this.flash('已把该成员移出会议');
           this.scheduleSync(0);
         } catch (err) {
-          if (err.dead) { this.forgetSession(); this.goAuth(); return; }
+          if (err.dead) { this.sessionDead(); return; }
           this.flash(err.message || '移出失败');
         }
       },
@@ -669,8 +674,7 @@
           }
         } catch (err) {
           if (err.dead) {
-            this.forgetSession();
-            this.goAuth();
+            this.sessionDead();
             return;   // 别再排下一拍了
           }
           // 其它错误 (比如某一拍网络抖了) 下一拍自己会好

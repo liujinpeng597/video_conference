@@ -246,6 +246,20 @@ bool deleteToken(const std::string& tokenHash, std::string* err) {
     return true;
 }
 
+bool deleteUserTokens(long long userId, const std::string& keepHash, std::string* err) {
+    err->clear();
+    PGresult* r = nullptr;
+    if (keepHash.empty()) {
+        r = query(err, "DELETE FROM auth_tokens WHERE user_id = $1", {std::to_string(userId)});
+    } else {
+        r = query(err, "DELETE FROM auth_tokens WHERE user_id = $1 AND token_hash <> $2",
+                  {std::to_string(userId), keepHash});
+    }
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
 bool countUsers(long long* out, std::string* err) {
     err->clear();
     PGresult* r = query(err, "SELECT count(*) FROM users", {});

@@ -239,6 +239,7 @@ check "密码错 401" "401" "$(status)"
 call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
 check "登录 200" "200" "$(status)"
 contains "登录返回 token" "$(body)" '"token":"'
+TOKEN_A=$(jstr token)   # 一次登录只留一个会话: 刚登录把注册那枚挤掉了, 后面都用这枚
 
 call POST /api/login '{"username":"nobody_at_all","password":"hunter2"}'
 check "不存在的用户也是 401 (不泄露用户名存不存在)" "401" "$(status)"
@@ -248,6 +249,7 @@ check "用户名大小写不敏感 (LIN 撞 lin) 409" "409" "$(status)"
 
 call POST /api/login "{\"username\":\"LIN$SUF\",\"password\":\"hunter2\"}"
 check "大写用户名也能登录 200" "200" "$(status)"
+TOKEN_A=$(jstr token)
 
 echo
 echo "---- 登录失败锁定 (按账号) ----"
@@ -269,6 +271,7 @@ check "第 6 次密码对也拒绝 (锁定中) 429" "429" "$(status)"
 
 call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
 check "锁定只针对该账号, 别的账号不受影响 200" "200" "$(status)"
+TOKEN_A=$(jstr token)
 
 exec 9<>/dev/tcp/"$RHOST"/"$RPORT"
 printf 'DEL login_fail:%s\r\n' "$USER_L" >&9
@@ -292,6 +295,22 @@ call GET /api/me '' "deadbeef"
 check "假 token 401" "401" "$(status)"
 
 echo
+echo "---- 一次登录只留一个会话 ----"
+# 换个设备再登录, 旧会话要立刻失效 (不是等 60 秒缓存过期): 会话校验缓存按账号清掉。
+USER_S="sess$SUF"
+call POST /api/register "{\"username\":\"$USER_S\",\"password\":\"hunter2\"}"
+TOKEN_S1=$(jstr token)
+call GET /api/me '' "$TOKEN_S1"
+check "第一个会话能用 200" "200" "$(status)"
+call POST /api/login "{\"username\":\"$USER_S\",\"password\":\"hunter2\"}"
+check "同账号再登录一次 200" "200" "$(status)"
+TOKEN_S2=$(jstr token)
+call GET /api/me '' "$TOKEN_S2"
+check "新会话能用 200" "200" "$(status)"
+call GET /api/me '' "$TOKEN_S1"
+check "旧会话立刻失效 401 (被挤下线)" "401" "$(status)"
+
+echo
 echo "---- 保持登录 (长期令牌) ----"
 call POST /api/register "{\"username\":\"$USER_C\",\"password\":\"hunter2\",\"remember\":true}"
 check "注册时勾了保持登录 200" "200" "$(status)"
@@ -309,6 +328,7 @@ check "换来的会话能用 200" "200" "$(status)"
 
 call POST /api/session/resume "{\"remember_token\":\"$REM_C\"}"
 check "长期令牌可以重复用 (别的标签页也要能换) 200" "200" "$(status)"
+RESUMED=$(jstr token)   # 每次 resume 换出新的会话, 上一次换来的会被挤掉, 所以取最新的
 
 call POST /api/session/resume '{"remember_token":"deadbeef"}'
 check "假长期令牌 401" "401" "$(status)"
@@ -803,13 +823,15 @@ grep -q 'caught signal 15' "$LOG" && echo "ok   - signalfd 收到 SIGTERM" || { 
 rm -f "$LOG"
 start_server
 
-call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
-check "重启后老账号还能登录 (账号持久化)" "200" "$(status)"
-contains "重启后拿到新 token" "$(body)" '"token":"'
-
+# 先查"重启前发的会话还在不在" —— 一次登录只留一个会话, 所以要排在重新登录之前
 call GET /api/me '' "$TOKEN_A"
 check "重启前发的会话令牌依然有效 (会话持久化)" "200" "$(status)"
 check "拿回来的还是同一个人" "$USER_A" "$(jstr user)"
+
+call POST /api/login "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
+check "重启后老账号还能登录 (账号持久化)" "200" "$(status)"
+contains "重启后拿到新 token" "$(body)" '"token":"'
+TOKEN_A=$(jstr token)
 
 call POST /api/register "{\"username\":\"$USER_A\",\"password\":\"hunter2\"}"
 check "重启后重名照样拦住" "409" "$(status)"

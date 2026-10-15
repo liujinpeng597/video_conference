@@ -140,6 +140,13 @@ bool validPass(const std::string& s, std::string* why) {
 // 造令牌: 明文给客户端, 库里只存 hash。
 bool mintTokens(long long userId, const std::string& username, bool remember, Result* r) {
     std::string err;
+    // 一次登录只留一个有效会话: 先把这账号的旧令牌 (旧会话 + 旧的"保持登录") 全清掉。
+    // 于是上一台设备下一个请求就掉线 —— 这就是"换个设备登录会把旧设备挤下线"。
+    if (!db::deleteUserTokens(userId, std::string(), &err)) {
+        r->status = Status::Error;
+        r->error = "清理旧会话失败：" + err;
+        return false;
+    }
     const std::string session = randomToken();
     if (!db::insertToken(sha256Hex(session), userId, db::TokenKind::Session, kSessionTtlSec, &err)) {
         r->status = Status::Error;
@@ -270,7 +277,13 @@ Result resume(const std::string& rememberToken) {
         return r;
     }
 
-    // 只发新 session, remember 令牌保持不动 (别的标签页还在用同一个)
+    // 换新会话前先清掉这账号的其它令牌 (旧会话 + 别的设备留下的长期令牌),
+    // 只保留这次正在用的这枚长期令牌 —— 不然它自己会被清掉, "保持登录"当场失效。
+    if (!db::deleteUserTokens(ti.userId, sha256Hex(rememberToken), &err)) {
+        r.status = Status::Error;
+        r.error = "清理旧会话失败：" + err;
+        return r;
+    }
     std::string newErr;
     const std::string session = randomToken();
     if (!db::insertToken(sha256Hex(session), ti.userId, db::TokenKind::Session, kSessionTtlSec, &newErr)) {

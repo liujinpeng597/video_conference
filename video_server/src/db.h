@@ -47,6 +47,10 @@ bool lookupToken(const std::string& tokenHash, TokenInfo* out, std::string* err)
 
 bool deleteToken(const std::string& tokenHash, std::string* err);
 
+// 删掉某个账号的令牌 (换新会话时用: 一次登录只留一个有效会话 = "挤掉上一台设备")。
+// keepHash 非空时保留这一枚 (resume 用的是长期令牌, 别把它自己清掉, 否则"保持登录"当场失效)。
+bool deleteUserTokens(long long userId, const std::string& keepHash, std::string* err);
+
 // 用户总数。给 /api/health 用, 顺便当"数据库还活着吗"的探针。
 bool countUsers(long long* out, std::string* err);
 

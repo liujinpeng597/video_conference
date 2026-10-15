@@ -311,6 +311,23 @@ bool hLen(const std::string& key, long long* out, std::string* err) {
     return true;
 }
 
+bool sAdd(const std::string& key, const std::string& member, std::string* err) {
+    err->clear();
+    return run(err, {"SADD", key, member}).ok();
+}
+
+bool sMembers(const std::string& key, std::vector<std::string>* out, std::string* err) {
+    err->clear();
+    Reply r = run(err, {"SMEMBERS", key});
+    if (!r.ok()) return false;
+    if (r.r->type != REDIS_REPLY_ARRAY) return true;  // key 不存在 = 空集合
+    for (size_t i = 0; i < r.r->elements; ++i) {
+        const redisReply* e = r.r->element[i];
+        out->emplace_back(e->str, (size_t)e->len);
+    }
+    return true;
+}
+
 bool rPush(const std::string& key, const std::string& value, std::string* err) {
     err->clear();
     return run(err, {"RPUSH", key, value}).ok();
