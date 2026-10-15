@@ -17,7 +17,7 @@
 // 再用页面的调试句柄 window.tongpin 和 Vue 实例读真实状态。
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -407,6 +407,72 @@ try {
         console.log('屏幕共享停止: 已切回摄像头, 连接保持');
       }
     }
+  }
+
+  // 阶段 3: 房间聊天 —— 写走 POST /api/rooms/chat, 读搭 /api/rooms/state 的 chat 字段同一拍带回。
+  // 断言: tab0 发出的是自己那条; tab1 收到; tab1 面板关着时未读 +1;
+  // 而且用户文本按纯文本渲染 (HTML 被转义) —— 聊天是最脏的用户输入, 这条最重要。
+  await activate(cdp, pages[0].sessionId);
+  const chatText = `e2e-<b>${SUFFIX}</b>-${Math.random().toString(36).slice(2, 6)}`;
+  const sent = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `(async () => {
+       const vm = ${VM};
+       vm.toggleChat();
+       vm.chatInput = ${JSON.stringify(chatText)};
+       await vm.sendChat();
+       return { open: vm.chatOpen, mine: vm.chatMessages.map(m => m.text), input: vm.chatInput };
+     })()`,
+  );
+  if (!sent.open || !sent.mine.includes(chatText) || sent.input !== '') {
+    failed = true;
+    console.error(`聊天发送断言失败: ${JSON.stringify(sent)}`);
+  }
+
+  // tab1 的聊天面板先不打开: 一边等它轮询收到, 一边验证未读计数
+  let got = null;
+  for (let i = 0; i < 30; i++) {
+    await activate(cdp, pages[1].sessionId);
+    got = await evalIn(
+      cdp,
+      pages[1].sessionId,
+      `(() => { const vm = ${VM}; return { msgs: vm.chatMessages.map(m => m.text), unread: vm.chatUnread }; })()`,
+    );
+    if (got.msgs.includes(chatText)) break;
+    await sleep(500);
+  }
+  await activate(cdp, pages[1].sessionId);
+  const rendered = await evalIn(
+    cdp,
+    pages[1].sessionId,
+    `(async () => {
+       const vm = ${VM};
+       if (!vm.chatOpen) vm.toggleChat();
+       await vm.$nextTick();   // v-if 是异步渲染的, 不等一拍 DOM 还是空的
+       return document.querySelector('.chat__list')?.innerHTML || '';
+     })()`,
+  );
+  const escaped = rendered.includes('&lt;b&gt;') && !rendered.includes('<b>');
+  if (!got || !got.msgs.includes(chatText)) {
+    failed = true;
+    console.error('聊天接收断言失败: tab1 没收到消息');
+  } else if (got.unread < 1) {
+    failed = true;
+    console.error(`聊天未读断言失败: unread=${got.unread}`);
+  } else if (!escaped) {
+    failed = true;
+    console.error(`聊天转义断言失败 (用户文本被当成 HTML 渲染): ${rendered.slice(0, 200)}`);
+  } else {
+    console.log(`聊天: tab0 发出, tab1 收到 (未读 ${got.unread}), 文本按纯文本渲染`);
+  }
+
+  // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
+  if (process.env.E2E_SHOT) {
+    await activate(cdp, pages[1].sessionId);
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[1].sessionId);
+    writeFileSync(process.env.E2E_SHOT, Buffer.from(shot.data, 'base64'));
+    console.log(`截图: ${process.env.E2E_SHOT}`);
   }
 
   if (failed) {

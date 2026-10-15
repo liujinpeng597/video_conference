@@ -19,6 +19,12 @@ constexpr long long kKeyTtlSec = 60;      // room / session / mailbox 的 Redis 
 constexpr size_t kMaxRoomPeers = 6;
 // 一次协商几十条消息就够了, 留 64 条是给"轮询丢了一拍重试"用的
 constexpr long long kMailboxMax = 64;
+// 房间聊天: 只留最近 50 条, 10 分钟没人聊就整条过期。TTL 比房间的 60s 宽, 是为了
+// "低头处理点别的、回头还能看到刚才的对话"; 房间真的空了 enter 会把它清掉,
+// 所以复用的房间号上不会看到上一个房间的聊天。
+constexpr long long kChatMax = 50;
+constexpr long long kChatTtlSec = 600;
+constexpr size_t kMaxChatText = 500;  // 单条上限 (字节)
 constexpr char kSep = '\x1f';
 
 int64_t nowMs() {
@@ -29,6 +35,8 @@ int64_t nowMs() {
 std::string roomKey(const std::string& room) { return "room:" + room; }
 std::string sessionKey(const std::string& token) { return "session:" + token; }
 std::string mailboxKey(const std::string& token) { return "mailbox:" + token; }
+std::string chatKey(const std::string& room) { return "chat:" + room; }
+std::string chatSeqKey(const std::string& room) { return "chat:seq:" + room; }
 
 const char* kSeqKey = "signaling:seq";
 
@@ -123,6 +131,12 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     if (!redis::setEx(sessionKey(token), join3(room, *pid, user), kKeyTtlSec, err)) return Enter::Error;
     // 换房间了, 把上一个房间留下的信令清掉
     if (!redis::del(mailboxKey(token), err)) return Enter::Error;
+    // 这个房间本来就是空的 (刚被创建, 或者号码被复用): 清掉可能残留的聊天历史,
+    // 免得后进来的人看到上一拨人的对话
+    if (live == 0) {
+        if (!redis::del(chatKey(room), err)) return Enter::Error;
+        if (!redis::del(chatSeqKey(room), err)) return Enter::Error;
+    }
 
     // 上面的 HGETALL 是在写我之前跑的, 所以自己得补进去
     bool patched = false;
@@ -210,6 +224,52 @@ Send send(const std::string& token, const std::string& toPid, const std::string&
         return Send::Error;
     }
     return Send::Delivered;
+}
+
+Chat postChat(const std::string& token, const std::string& text, ChatMessage* out, std::string* err) {
+    // 文本校验: 非空、不超长、不含控制字符 (控制字符既会撞上 \x1f 分隔符,
+    // 也会破坏"单行输入"的假设)。UTF-8 的多字节字符 >=0x80, 不受影响。
+    if (text.empty()) return Chat::Empty;
+    if (text.size() > kMaxChatText) return Chat::TooLong;
+    for (unsigned char c : text) {
+        if (c < 0x20 || c == 0x7f) return Chat::BadText;
+    }
+
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Chat::NotInRoom : Chat::Error;
+
+    long long id = 0;
+    if (!redis::chatPush(chatSeqKey(me.room), chatKey(me.room), me.pid, me.user, text,
+                         std::string(1, kSep), kChatMax, kChatTtlSec, &id, err)) {
+        return Chat::Error;
+    }
+    out->id = (uint64_t)id;
+    out->from = me.pid;
+    out->name = me.user;
+    out->text = text;
+    return Chat::Ok;
+}
+
+bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>* out,
+               std::string* err) {
+    out->clear();
+    if (room.empty()) return true;  // 不在房间, 没有消息
+
+    std::vector<std::string> raw;
+    if (!redis::lRange(chatKey(room), &raw, err)) return false;
+    for (const std::string& line : raw) {
+        std::vector<std::string> parts;
+        if (!splitN(line, 3, &parts)) continue;  // 字段坏了就跳过这一条
+        const uint64_t id = std::strtoull(parts[0].c_str(), nullptr, 10);
+        if (id <= since) continue;               // 客户端已经收过的
+        ChatMessage m;
+        m.id = id;
+        m.from = parts[1];
+        m.name = parts[2];
+        m.text = parts[3];
+        out->push_back(std::move(m));
+    }
+    return true;
 }
 
 bool leave(const std::string& token, std::string* err) {

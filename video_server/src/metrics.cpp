@@ -13,13 +13,14 @@
 namespace metrics {
 namespace {
 
-constexpr int kRoutes = 10;
+constexpr int kRoutes = 11;
 constexpr int kBuckets = 9;
 constexpr int kOverflow = kBuckets;  // > 2.5s 的都落这里
 constexpr double kBucketLe[kBuckets] = {0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5};
 
 const char* kRouteName[kRoutes] = {"login", "register", "me",    "rooms",  "state",
-                                   "signal", "ice",    "health", "static", "other"};
+                                   "signal", "ice",    "health", "static", "chat",
+                                   "other"};
 
 // 固定状态码表 (分布看得准); 表外的一律归 "other"
 constexpr int kStatuses = 16;
@@ -64,6 +65,7 @@ Route classify(const std::string& path) {
     if (path == "/api/me" || path == "/api/logout" || path == "/api/session/resume") return Route::Me;
     if (path == "/api/rooms/state") return Route::State;
     if (path == "/api/rooms/signal") return Route::Signal;
+    if (path == "/api/rooms/chat") return Route::Chat;
     if (path == "/api/rooms/enter" || path == "/api/rooms/leave") return Route::Rooms;
     if (path == "/api/ice") return Route::Ice;
     if (path == "/api/health") return Route::Health;

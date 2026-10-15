@@ -21,6 +21,7 @@ enum class Route {
     Ice,
     Health,
     Static,
+    Chat,
     Other,
 };
 

@@ -227,6 +227,36 @@
         </div>
       </div>
 
+      <aside class="chat" id="room-chat" v-if="chatOpen" aria-label="房间聊天">
+        <header class="chat__head">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-message"></use></svg>
+          <h2 class="chat__title">聊天</h2>
+          <button class="chat__x" type="button" @click="toggleChat" aria-label="关闭聊天">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-x"></use></svg>
+          </button>
+        </header>
+
+        <!-- 消息文本用 {{ }} 插值渲染 (Vue 自动转义), 绝不用 v-html: 聊天内容是最脏的用户输入 -->
+        <div class="chat__list" ref="chatList">
+          <p class="chat__empty" v-if="chatMessages.length === 0">还没有消息，说点什么吧。</p>
+          <div class="chat__msg" v-for="m in chatMessages" :key="m.id"
+               :class="{ 'chat__msg--mine': m.from === myPid }">
+            <p class="chat__who">{{ m.from === myPid ? '我' : m.name }}</p>
+            <p class="chat__text">{{ m.text }}</p>
+          </div>
+        </div>
+
+        <p class="chat__err" role="alert" v-if="chatError">{{ chatError }}</p>
+
+        <form class="chat__form" @submit.prevent="sendChat">
+          <input class="input chat__input" type="text" v-model="chatInput" maxlength="500"
+                 placeholder="输入消息，回车发送" autocomplete="off" aria-label="消息内容">
+          <button class="chat__send" type="submit" :disabled="!chatInput.trim() || chatSending" aria-label="发送">
+            <svg class="icon" aria-hidden="true"><use href="#ic-send"></use></svg>
+          </button>
+        </form>
+      </aside>
+
       <footer class="controls">
         <button class="ctl" type="button" @click="toggleMic" :disabled="!media.stream" :aria-pressed="micOn">
           <svg class="icon" aria-hidden="true"><use :href="micOn ? '#ic-microphone' : '#ic-microphone-off'"></use></svg>
@@ -239,6 +269,11 @@
         <button class="ctl" type="button" :class="{ 'ctl--share-on': sharing }" @click="toggleShare">
           <svg class="icon" aria-hidden="true"><use :href="sharing ? '#ic-screen-share-off' : '#ic-screen-share'"></use></svg>
           <span class="ctl__label">{{ sharing ? '停止共享' : '共享屏幕' }}</span>
+        </button>
+        <button class="ctl ctl--chat" type="button" :class="{ 'ctl--on': chatOpen }" @click="toggleChat" :aria-expanded="chatOpen" aria-controls="room-chat">
+          <svg class="icon" aria-hidden="true"><use href="#ic-message"></use></svg>
+          <span class="ctl__label">聊天</span>
+          <span class="ctl__badge" v-if="chatUnread > 0">{{ chatUnread > 9 ? '9+' : chatUnread }}</span>
         </button>
         <button class="ctl ctl--leave" type="button" @click="leave">
           <svg class="icon" aria-hidden="true"><use href="#ic-phone-off"></use></svg>
@@ -316,6 +351,16 @@
   <path d="M3 3l18 18" />
   <path d="M15 11v-1l4.553 -2.276a1 1 0 0 1 1.447 .894v6.764a1 1 0 0 1 -.675 .946" />
   <path d="M10 6h3a2 2 0 0 1 2 2v3m0 4v1a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2h1" /></symbol>
+  <symbol id="ic-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M8 9h8" />
+  <path d="M8 13h6" />
+  <path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z" /></symbol>
+  <symbol id="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M10 14l11 -11" />
+  <path d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5" /></symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M18 6l-12 12" />
+  <path d="M6 6l12 12" /></symbol>
 </svg>
 <!--ICONS:END-->
 

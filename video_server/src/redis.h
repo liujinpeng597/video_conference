@@ -56,6 +56,14 @@ bool mailboxPush(const std::string& seqKey, const std::string& mailboxKey,
                  const std::string& payload, const std::string& sep,
                  long long maxLen, long long ttlSec, long long* seq, std::string* err);
 
+// 往房间聊天列表追加一条 (取号 + 入队 + 裁剪 + 续期在一个 Lua 脚本里原子完成,
+// 理由同 mailboxPush: 取号和入队不原子会让 since 游标漏掉"序号更小但后入队"的消息)。
+// 条目格式 "id\x1ffrom\x1fname\x1ftext"。成功时 *id 是这条消息的序号。
+bool chatPush(const std::string& seqKey, const std::string& listKey,
+              const std::string& from, const std::string& name, const std::string& text,
+              const std::string& sep, long long maxLen, long long ttlSec, long long* id,
+              std::string* err);
+
 // 数一下匹配的 key 有多少个, 最多数 limit 个 (给 /api/health 用, 不是精确值)
 bool countKeys(const std::string& pattern, long long limit, long long* out, std::string* err);
 

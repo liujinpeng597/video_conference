@@ -16,6 +16,7 @@ const ICONS = [
   'alert-triangle', 'check', 'eye', 'eye-off', 'link', 'logout',
   'microphone', 'microphone-off', 'phone-off', 'refresh', 'screen-share', 'screen-share-off',
   'user', 'video', 'video-off',
+  'message', 'send', 'x',
 ];
 
 const SYMBOL_ATTRS =

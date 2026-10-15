@@ -166,8 +166,9 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
 | GET | `/api/me` | - | `{"user"}` |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
-| GET | `/api/rooms/state?since=N` | - | 成员列表 + 我的信令收件箱（前端每 0.4-2 秒轮一次） |
+| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表 + 我的信令收件箱 + 房间聊天（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
+| POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
@@ -180,6 +181,10 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   响应里的 `seq` 是本次真的下发的消息里的最大序号（没有新消息就原样返回 `since`），
   客户端拿它当下一次的 `since`。
 - `kind` 只允许 `offer` / `answer` / `ice`，`payload` 最大 16KB。
+- 房间聊天：**写**走 `POST /api/rooms/chat`，**读**搭在 `/api/rooms/state` 上（`chat` 参数是本端
+  已收到的最大消息 id），所以不额外发请求。消息存 Redis 列表（只留最近 50 条、10 分钟 TTL），
+  序号在房间内单调递增，游标语义和信令收件箱一致；房间空了再进新人会先清掉旧历史。
+  服务端只校验文本（非空、≤500 字节、无控制字符），前端用 `{{ }}` 转义渲染，不做 HTML 注入。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；

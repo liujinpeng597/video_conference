@@ -39,6 +39,13 @@ struct Signal {
     std::string payload;  // 客户端发来的原始 JSON 片段
 };
 
+struct ChatMessage {
+    uint64_t id = 0;      // 房间内单调递增, 当 since 游标用
+    std::string from;     // 发送者的 pid
+    std::string name;     // 发送者的用户名
+    std::string text;
+};
+
 struct Me {
     std::string room;
     std::string pid;
@@ -67,6 +74,17 @@ enum class Send { Delivered, NoSuchPeer, NotInRoom, Error };
 // 把一条信令放进目标参会者的收件箱。只能发给同一个房间里还活着的人。
 Send send(const std::string& token, const std::string& toPid, const std::string& kind,
           const std::string& payload, std::string* err);
+
+// 房间聊天。存 Redis 列表 (只留最近 kChatMax 条, 带 TTL), 用房间内序号做游标,
+// 设计上刻意和信令收件箱同一套路: 取号 + 入队原子 (redis::chatPush)。
+enum class Chat { Ok, NotInRoom, Empty, TooLong, BadText, Error };
+
+// 往我当前所在的房间发一条。成功时 *out 是入库的那条 (带分配到的 id 和发送者信息)。
+Chat postChat(const std::string& token, const std::string& text, ChatMessage* out, std::string* err);
+
+// 取房间里 id > since 的消息。room 为空 (不在房间) 时返回空列表。
+bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>* out,
+               std::string* err);
 
 bool leave(const std::string& token, std::string* err);
 

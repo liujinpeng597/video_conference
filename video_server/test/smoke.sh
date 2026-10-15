@@ -527,6 +527,62 @@ call GET "/api/rooms/state?since=$prev" '' "$TOKEN_R1"
 check "用最新游标再拉一次不重复下发" "0" "$(jcount from)"
 
 echo
+echo "---- 房间聊天 ----"
+# 新起两个账号 (不打扰上面那批状态) 一起进一个房间。聊天读走 /api/rooms/state 的 chat
+# 字段 (和成员列表同一拍), 写走 POST /api/rooms/chat。
+USER_CA="chata$SUF"
+USER_CB="chatb$SUF"
+USER_CX="chatx$SUF"
+call POST /api/register "{\"username\":\"$USER_CA\",\"password\":\"hunter2\"}"
+TOKEN_CA=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_CB\",\"password\":\"hunter2\"}"
+TOKEN_CB=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_CA"
+CROOM=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$CROOM\"}" "$TOKEN_CB"
+check "两个账号进了同一个房间" "2" "$(jcount name)"
+
+call POST /api/rooms/chat "{\"text\":\"hello 世界\"}" "$TOKEN_CA"
+check "发消息 200" "200" "$(status)"
+contains "返回里带消息 id" "$(body)" '"id":'
+
+call GET "/api/rooms/state?since=0&chat=0" '' "$TOKEN_CB"
+check "另一方能收到消息" "1" "$(jcount text)"
+contains "内容原样 (中文和尖括号没坏)" "$(body)" 'hello 世界'
+CHAT_SEQ=$(printf '%s' "$(body)" | sed -n 's/.*"chatSeq":\([0-9]*\).*/\1/p')
+check "chatSeq 前进到 1" "1" "$CHAT_SEQ"
+
+call GET "/api/rooms/state?since=0&chat=$CHAT_SEQ" '' "$TOKEN_CB"
+check "用最新游标再拉不重复下发" "0" "$(jcount text)"
+
+call POST /api/rooms/chat '{"text":""}' "$TOKEN_CA"
+check "空消息 400" "400" "$(status)"
+LONG_TEXT=$(printf 'x%.0s' $(seq 1 600))
+call POST /api/rooms/chat "{\"text\":\"$LONG_TEXT\"}" "$TOKEN_CA"
+check "超长消息 413" "413" "$(status)"
+call POST /api/rooms/chat '{"text":"a\u001fb"}' "$TOKEN_CA"
+check "含控制字符 400" "400" "$(status)"
+
+call POST /api/register "{\"username\":\"$USER_CX\",\"password\":\"hunter2\"}"
+TOKEN_CX=$(jstr token)
+call POST /api/rooms/chat '{"text":"hi"}' "$TOKEN_CX"
+check "不在房间不能发言 409" "409" "$(status)"
+
+call POST /api/rooms/chat '{"text":"hi"}'
+check "未登录发言 401" "401" "$(status)"
+
+call GET /api/rooms/chat '' "$TOKEN_CA"
+check "聊天只收 POST, GET 405" "405" "$(status)"
+
+# 房间号复用: 人都走了以后, 同一个号码再进新人, 不该看到上一拨的聊天历史
+call POST /api/rooms/leave '{}' "$TOKEN_CA"
+call POST /api/rooms/leave '{}' "$TOKEN_CB"
+call POST /api/rooms/enter "{\"room\":\"$CROOM\"}" "$TOKEN_CX"
+call GET "/api/rooms/state?since=0&chat=0" '' "$TOKEN_CX"
+check "号码复用时聊天历史被清掉" "0" "$(jcount text)"
+call POST /api/rooms/leave '{}' "$TOKEN_CX"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"

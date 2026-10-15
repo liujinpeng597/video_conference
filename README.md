@@ -64,11 +64,12 @@ docker compose up -d --build
 - 三个后端实例 + nginx 轮询，杀掉一台不影响服务
 - 限流三层：nginx 按 IP + 后端按账号失败锁定 + 后端按令牌（防爆破、防单账号被脚本刷）
 - 屏幕共享（`replaceTrack` 无缝切换，对端不重新协商）
+- 房间内文字聊天（复用状态轮询带回，不额外发请求；消息在 Redis 里留最近 50 条）
 
 **还不能：**
 
 - **4-6 人以上**：mesh 下每个人要给其他每个人发一路，上行是 (N-1) 倍。要更多人得换 SFU。
-- 聊天、举手、录制、虚拟背景
+- 举手、录制、虚拟背景（房间文字聊天已支持）
 - 跨网络通话需要一台有公网地址的 TURN：compose 已内置 coturn，部署时把 `TURN_URL` 指过去即可；本机 / 局域网用不到
 - TLS：开发默认明文 HTTP；`docker-compose.prod.yml` 一键开 HTTPS（证书怎么来见 `nginx/README.md`）
 

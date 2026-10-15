@@ -108,6 +108,15 @@
         peerHasVideo: {},   // pid -> 有没有收到画面
         audioBlocked: false,
 
+        // 聊天: 服务端只留最近 50 条, 客户端内存里最多留 200 条
+        chatOpen: false,
+        chatMessages: [],   // [{ id, from, name, text }]
+        chatInput: '',
+        chatSince: 0,       // 已经收到的最大消息 id (游标)
+        chatUnread: 0,
+        chatSending: false,
+        chatError: '',
+
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
         copied: false,
@@ -408,6 +417,7 @@
           this.nowTick = Date.now();
           this.sigSince = 0;      // 进房间就从头开始收信令
           this.lastHandledSeq = 0;
+          this.resetChat();
           this.view = 'room';
           this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
@@ -446,6 +456,77 @@
         }
       },
 
+      // --------------------------------------------------------------- 聊天
+      // 聊天复用同一条轮询 (/api/rooms/state 里带 chat 游标), 不额外发请求;
+      // 消息文本在模板里用 {{ }} 渲染 (Vue 自动转义), 不做任何 innerHTML。
+      resetChat() {
+        this.chatMessages = [];
+        this.chatSince = 0;
+        this.chatUnread = 0;
+        this.chatInput = '';
+        this.chatSending = false;
+        this.chatError = '';
+      },
+
+      toggleChat() {
+        this.chatOpen = !this.chatOpen;
+        if (this.chatOpen) {
+          this.chatUnread = 0;
+          this.chatError = '';
+          this.scrollChat();
+        }
+      },
+
+      // 把这一拍带回的消息并进来。自己刚发的那条已经先落进列表了, 按 id 去重。
+      // 游标只前进到服务端确认的 chatSeq, 不回退 —— 否则会漏掉别人在这前后的消息。
+      applyChat(r) {
+        if (typeof r.chatSeq === 'number' && r.chatSeq > this.chatSince) this.chatSince = r.chatSeq;
+        const msgs = Array.isArray(r.chat) ? r.chat : [];
+        if (msgs.length === 0) return;
+        let added = 0;
+        for (const m of msgs) {
+          if (this.chatMessages.some((x) => x.id === m.id)) continue;
+          this.chatMessages.push({ id: m.id, from: m.from, name: m.name, text: m.text });
+          added++;
+        }
+        if (this.chatMessages.length > 200) {
+          this.chatMessages.splice(0, this.chatMessages.length - 200);
+        }
+        if (!this.chatOpen) this.chatUnread += added;
+        else if (added > 0) this.scrollChat();
+      },
+
+      scrollChat() {
+        this.$nextTick(() => {
+          const el = this.$refs.chatList;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      },
+
+      async sendChat() {
+        const text = this.chatInput.trim();
+        if (!text || this.chatSending) return;
+        this.chatSending = true;
+        this.chatError = '';
+        try {
+          const r = await this.authed('POST', '/api/rooms/chat', { text });
+          if (r && typeof r.id === 'number' && !this.chatMessages.some((x) => x.id === r.id)) {
+            this.chatMessages.push({ id: r.id, from: r.from, name: r.name, text: r.text });
+          }
+          this.chatInput = '';
+          this.scrollChat();
+        } catch (err) {
+          if (err.dead) {
+            this.forgetSession();
+            this.goAuth();
+            return;
+          }
+          this.chatError = err.message || '消息没发出去';
+        } finally {
+          this.chatSending = false;
+        }
+      },
+
       // ------------------------------------------------------- 轮询 / 同步
       stopTimers() {
         clearTimeout(this.syncTimer);
@@ -469,9 +550,10 @@
 
       async sync() {
         try {
-          const r = await this.authed('GET', '/api/rooms/state?since=' + this.sigSince);
+          const r = await this.authed('GET', '/api/rooms/state?since=' + this.sigSince + '&chat=' + this.chatSince);
           this.applyRoom(r);
           await this.applySignals(r);
+          this.applyChat(r);
           this.syncCalls();
           // 房间状态是放在 Redis 里的。万一 Redis 重启 (数据没开持久化),
           // 我们的 session 就没了, 服务端会回一个空房间号。这时候留在会议界面
@@ -503,6 +585,7 @@
         this.joinedAt = 0;
         this.sigSince = 0;
         this.lastHandledSeq = 0;
+        this.resetChat();
         this.view = 'lobby';
         this.errors = { form: msg };
       },
@@ -769,6 +852,7 @@
         this.joinedAt = 0;
         this.sigSince = 0;
         this.lastHandledSeq = 0;
+        this.resetChat();
         this.view = 'lobby';
       },
 

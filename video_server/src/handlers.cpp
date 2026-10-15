@@ -637,10 +637,38 @@ Resp apiRoomsState(const Request& req) {
     }
     arr += ']';
 
+    // 房间聊天和成员列表同一拍带回 (省一次轮询): chat 参数是客户端已收到的最大消息 id。
+    // 只有打开了聊天面板的前端才会带它; 不带就是 0, 会拿到最近的历史。
+    const uint64_t chatAfter = (uint64_t)queryInt(req.query, "chat", 0);
+    std::vector<presence::ChatMessage> chat;
+    if (!presence::chatSince(room, chatAfter, &chat, &err)) {
+        return errJson(500, "同步房间消息失败：" + err);
+    }
+    uint64_t chatSeq = chatAfter;
+    std::string chatArr = "[";
+    bool chatFirst = true;
+    for (const presence::ChatMessage& m : chat) {
+        if (!chatFirst) chatArr += ',';
+        chatFirst = false;
+        if (m.id > chatSeq) chatSeq = m.id;
+        chatArr += "{\"id\":";
+        chatArr += std::to_string(m.id);
+        chatArr += ",\"from\":";
+        chatArr += json::quote(m.from);
+        chatArr += ",\"name\":";
+        chatArr += json::quote(m.name);
+        chatArr += ",\"text\":";
+        chatArr += json::quote(m.text);
+        chatArr += '}';
+    }
+    chatArr += ']';
+
     return okJson("{\"room\":" + json::quote(room) +
                   ",\"participants\":" + peersJson(members, req.token) +
                   ",\"seq\":" + std::to_string(seq) +
-                  ",\"messages\":" + arr + "}");
+                  ",\"messages\":" + arr +
+                  ",\"chat\":" + chatArr +
+                  ",\"chatSeq\":" + std::to_string(chatSeq) + "}");
 }
 
 // 把一条信令放进目标参会者的收件箱。
@@ -673,6 +701,38 @@ Resp apiRoomsSignal(const Request& req) {
         default:
             return errJson(500, "转发信令失败：" + err);
     }
+}
+
+// 房间聊天: 发一条消息。读取走 /api/rooms/state 的 chat 字段 (同一拍带回, 不用再轮询)。
+// 文本校验 (非空 / 不超长 / 无控制字符) 在 presence::postChat 里。
+Resp apiRoomsChat(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string text;
+    if (!json::getString(req.body, "text", &text)) return errJson(400, "请求体里要有 text");
+
+    presence::ChatMessage msg;
+    std::string err;
+    switch (presence::postChat(req.token, text, &msg, &err)) {
+        case presence::Chat::Ok:
+            break;
+        case presence::Chat::NotInRoom:
+            return errJson(409, "不在房间里, 不能发言");
+        case presence::Chat::Empty:
+            return errJson(400, "消息不能为空");
+        case presence::Chat::TooLong:
+            return errJson(413, "消息太长了");
+        case presence::Chat::BadText:
+            return errJson(400, "消息里有不允许的字符");
+        default:
+            return errJson(500, "发送消息失败：" + err);
+    }
+    return okJson("{\"id\":" + std::to_string(msg.id) +
+                  ",\"from\":" + json::quote(msg.from) +
+                  ",\"name\":" + json::quote(msg.name) +
+                  ",\"text\":" + json::quote(msg.text) + "}");
 }
 
 Resp apiIce(const Request& req) {
@@ -763,6 +823,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/signal") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsSignal(req);
+    }
+    if (req.path == "/api/rooms/chat") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsChat(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

@@ -218,6 +218,16 @@ constexpr char kIncrWithTtlScript[] = R"(local n = redis.call('INCR', KEYS[1])
 if n == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])) end
 return n)";
 
+// 房间聊天入队脚本 (配合 redis.h 里 chatPush 的注释看):
+// 取号 -> 拼 "id\x1ffrom\x1fname\x1ftext" -> 入队 -> 裁剪 -> 给两个 key 一起续期。
+// 序号 key 和列表 key 同 TTL, 房间空了一段时间后一起消失。
+constexpr char kChatPushScript[] = R"(local id = redis.call('INCR', KEYS[1])
+redis.call('RPUSH', KEYS[2], id .. ARGV[1] .. ARGV[2] .. ARGV[1] .. ARGV[3] .. ARGV[1] .. ARGV[4])
+redis.call('LTRIM', KEYS[2], -tonumber(ARGV[5]), -1)
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[6]))
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
+return id)";
+
 }  // namespace
 
 bool init(const std::string& url, std::string* err) {
@@ -357,6 +367,23 @@ bool mailboxPush(const std::string& seqKey, const std::string& mailboxKey,
         return false;
     }
     *seq = r.r->integer;
+    return true;
+}
+
+bool chatPush(const std::string& seqKey, const std::string& listKey,
+              const std::string& from, const std::string& name, const std::string& text,
+              const std::string& sep, long long maxLen, long long ttlSec, long long* id,
+              std::string* err) {
+    err->clear();
+    Reply r = run(err, {"EVAL", kChatPushScript, "2", seqKey, listKey,
+                        sep, from, name, text,
+                        std::to_string(maxLen), std::to_string(ttlSec)});
+    if (!r.ok()) return false;
+    if (r.r->type != REDIS_REPLY_INTEGER) {
+        *err = "chatPush: 脚本没返回序号";
+        return false;
+    }
+    *id = r.r->integer;
     return true;
 }
 

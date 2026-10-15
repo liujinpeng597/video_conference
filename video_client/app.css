@@ -656,6 +656,125 @@ button, input { font-family: inherit; }
 .ctl--share-on { border-color: var(--brand); color: var(--brand); }
 .ctl--share-on .icon { color: var(--brand); }
 
+/* ------------------------------------------------------------------ 聊天 */
+/* 面板做成"内容区里的右侧抽屉": 用 top/bottom 让开顶栏和底部控制条,
+   所以开着聊天照样能静音 / 共享 / 离开 (盖住控制条会很烦)。
+   两个高度变量和 .topbar / .controls 的实际高度对齐。 */
+.app--room { position: relative; --room-top: 56px; --room-bottom: 57px; }
+.chat {
+  position: absolute;
+  top: var(--room-top);
+  right: 0;
+  bottom: var(--room-bottom);
+  z-index: 20;
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: -10px 0 30px rgb(0 0 0 / .10);
+}
+.chat__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+}
+.chat__title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
+.chat__x {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.chat__x:hover { background: var(--fill-hover); color: var(--text); }
+
+.chat__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #c9ced6 transparent;
+}
+.chat__empty { margin: auto; color: var(--text-3); font-size: 13px; text-align: center; }
+.chat__msg {
+  align-self: flex-start;
+  max-width: 88%;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  background: var(--fill);
+}
+.chat__msg--mine { align-self: flex-end; background: var(--brand-weak); }
+.chat__who { margin-bottom: 2px; font-size: 11px; color: var(--text-3); }
+.chat__msg--mine .chat__who { color: var(--brand); text-align: right; }
+/* 长消息 / 无空格长串要能换行, 不然会把面板撑破 */
+.chat__text { font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.chat__err {
+  flex: none;
+  margin: 0 12px 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--danger-weak);
+  color: var(--danger-text);
+  font-size: 12px;
+}
+.chat__form {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+.chat__input { flex: 1; min-width: 0; }
+.chat__send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--on-brand);
+  cursor: pointer;
+}
+.chat__send:hover:not(:disabled) { background: var(--brand-hover); border-color: var(--brand-hover); }
+.chat__send:disabled { opacity: .5; cursor: not-allowed; }
+.chat__send .icon { color: currentColor; }
+
+/* 聊天按钮: 打开时主色高亮 (没有"关"的语义, 所以不走 danger 那套), 右上角带未读数 */
+.ctl--chat { position: relative; }
+.ctl--on { border-color: var(--brand); color: var(--brand); }
+.ctl--on .icon { color: var(--brand); }
+.ctl__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-full);
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
 /* ------------------------------------------------------------------ 动效 */
 @media (prefers-reduced-motion: no-preference) {
   .fade-enter-active, .fade-leave-active {
@@ -678,6 +797,9 @@ button, input { font-family: inherit; }
   .topbar__right { gap: 6px; }
   .controls { gap: 6px; padding: 8px 10px; }
   .ctl { height: 34px; padding: 0 12px; font-size: 12px; }
+  /* 窄屏: 聊天面板铺满内容区 (顶栏/控制条高度也小一号, 变量跟着调) */
+  .app--room { --room-top: 52px; --room-bottom: 51px; }
+  .chat { width: 100%; }
   .invite { padding: 14px; }
   .copyrow { flex-direction: column; }
 }
