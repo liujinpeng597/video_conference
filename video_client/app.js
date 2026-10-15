@@ -722,9 +722,13 @@
 
       async enterRoom(code) {
         this.errors = {};
+        this.actx();   // 趁着这次点击把手势用在解锁音频上下文上 (提示音要用)
         this.busy = true;
         try {
           const r = await this.authed('POST', '/api/rooms/enter', { room: code });
+          // 提示音基线要在 applyRoom 之前清: 不然它会拿"上一个房间的人"当基线 (进门就响一声)
+          prevPids.clear();
+          prevHands.clear();
           this.applyRoom(r);
           await this.loadIce();
           this.joinedAt = Date.now();
@@ -733,8 +737,6 @@
           this.lastHandledSeq = 0;
           this.resetChat();
           this.avFail = {};       // 头像加载失败的记录, 换房间要清
-          prevPids.clear();       // 提示音基线: 刚进房这一拍不响
-          prevHands.clear();
           this.membersOpen = false;
           this.focusPid = '';
           this.startLevelTimer();
@@ -951,7 +953,12 @@
       },
       attachAnalyser(key, stream) {
         if (!stream || stream.getAudioTracks().length === 0) return;
-        if (analysers.has(key)) return;
+        const cur = analysers.get(key);
+        if (cur && cur.stream === stream) return;          // 已经是这条流了
+        if (cur) {                                          // 换了设备 / 重新协商换了流: 换掉旧的
+          try { cur.src.disconnect(); } catch (err) { /* 已经断了 */ }
+          analysers.delete(key);
+        }
         const ctx = this.actx();
         if (!ctx) return;
         try {
@@ -959,7 +966,7 @@
           const an = ctx.createAnalyser();
           an.fftSize = 512;
           src.connect(an);   // 只分析, 不接 destination: 否则会把声音再放一遍
-          analysers.set(key, { src, an, buf: new Uint8Array(an.fftSize) });
+          analysers.set(key, { src, an, stream, buf: new Uint8Array(an.fftSize) });
         } catch (err) { /* 流没有音轨 / 已结束, 忽略 */ }
       },
       detachAnalysers() {
@@ -1001,20 +1008,26 @@
         if (!this.soundOn) return;
         const ctx = this.actx();
         if (!ctx) return;
-        const t0 = ctx.currentTime;
-        const notes = up ? [[0, 660], [0.12, 880]] : [[0, 560], [0.12, 420]];
-        for (const [dt, f] of notes) {
-          const o = ctx.createOscillator();
-          const g = ctx.createGain();
-          o.type = 'sine';
-          o.frequency.value = f;
-          g.gain.setValueAtTime(0.0001, t0 + dt);
-          g.gain.exponentialRampToValueAtTime(0.1, t0 + dt + 0.02);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
-          o.connect(g).connect(ctx.destination);
-          o.start(t0 + dt);
-          o.stop(t0 + dt + 0.15);
-        }
+        const play = () => {
+          const t0 = ctx.currentTime;
+          const notes = up ? [[0, 660], [0.12, 880]] : [[0, 560], [0.12, 420]];
+          for (const [dt, f] of notes) {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'sine';
+            o.frequency.value = f;
+            g.gain.setValueAtTime(0.0001, t0 + dt);
+            g.gain.exponentialRampToValueAtTime(0.1, t0 + dt + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
+            o.connect(g).connect(ctx.destination);
+            o.start(t0 + dt);
+            o.stop(t0 + dt + 0.15);
+          }
+        };
+        // 上下文没被手势解锁时 currentTime 是冻着的: 排下去的点在恢复之后已经过期, 等于没响。
+        // 所以先 resume 再把音排上。
+        if (ctx.state === 'suspended') ctx.resume().then(play).catch(() => {});
+        else play();
       },
       // 有人进 / 有人走 / 有人举手 -> 提示音 (第一拍只记基线, 不然一进房就响一串)
       noteArrivals(members) {
@@ -1086,6 +1099,7 @@
         const modes = [...new Set(['', this.myPid, this.host || ''])];
         const i = modes.indexOf(this.focusPid);
         this.focusPid = modes[(i + 1) % modes.length];
+        this.flash('布局：' + this.layoutName() + (this.focusPid ? ' 的画面放大' : '（宫格）'));
       },
       layoutName() {
         if (!this.focusPid) return '布局';

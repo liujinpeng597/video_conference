@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=20">
+<link rel="stylesheet" href="app.css?v=21">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -332,7 +332,7 @@
         <div class="topbar__right">
           <span class="chip">{{ participants.length }} 人在线</span>
           <span class="chip chip--lock" v-if="locked" title="会议已锁定，新人进不来">已锁定</span>
-          <button class="btn btn--text" type="button" @click="cycleLayout" title="布局：宫格 / 我最大 / 主持人最大">{{ layoutName() }}</button>
+          <button class="btn btn--text" :class="{ on: !!focusPid }" type="button" @click="cycleLayout" title="布局：宫格 / 我最大 / 主持人最大">{{ layoutName() }}</button>
           <button class="btn btn--text" type="button" @click="toggleFullscreen" title="全屏 (快捷键 f)">全屏</button>
           <button class="btn btn--text" type="button" v-if="amHost" @click="toggleLock">
             {{ locked ? '解锁会议' : '锁定会议' }}
@@ -633,7 +633,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=20"></script>
-<script src="app.js?v=20"></script>
+<script src="vendor/vue.global.prod.js?v=21"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>

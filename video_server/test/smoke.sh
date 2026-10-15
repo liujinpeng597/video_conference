@@ -688,6 +688,9 @@ call POST /api/profile '{"display_name":"改过的名"}' "$TOKEN_H1"
 check "改昵称 200" "200" "$(status)"
 call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
 contains "会中改名立刻生效 (别人那一拍就看到)" "$(body)" '"name":"改过的名"'
+# 关键: 改名的人自己再心跳一次, 名字不能被心跳写回去 (显示名在会话里也存了一份)
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H1"
+check "自己心跳之后还是新名字" "1" "$(printf '%s' "$(body)" | grep -c '"name":"改过的名"')"
 call POST /api/profile '{"display_name":""}' "$TOKEN_H1"
 
 call POST /api/rooms/leave '{}' "$TOKEN_H1"

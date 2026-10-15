@@ -418,6 +418,11 @@ Name setName(const std::string& token, const std::string& name, std::string* err
     if (!redis::hSet(roomKey(me.room), token, join3(me.pid, name, std::to_string(now)), err)) {
         return Name::Error;
     }
+    // 关键: 显示名在会话值里也存了一份 (whereAmI 读它, 心跳又用它重写成员值)。
+    // 只改成员值的话, 本人下一次心跳就把旧名字写回来了 —— "改名没生效"就是这么来的。
+    if (!redis::setEx(sessionKey(token), join3(me.room, me.pid, name), kKeyTtlSec, err)) {
+        return Name::Error;
+    }
     if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Name::Error;
     return Name::Ok;
 }

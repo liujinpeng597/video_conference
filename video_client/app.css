@@ -634,14 +634,16 @@ button, input { font-family: inherit; }
 .tile { cursor: zoom-in; }
 .tile--focus { outline: 2px solid var(--brand); outline-offset: -2px; }
 
-.grid[data-n="1"] {
+/* 注意 :not(.is-focus):  "按人数排版" 那几条和 .grid.is-focus 特异性一样, 谁在后面谁赢。
+   加了这个限定之后, 放大模式下这些规则直接不参与, 不会把大格又压回两列。 */
+.grid:not(.is-focus)[data-n="1"] {
   grid-template-columns: minmax(0, 1fr);
   width: 100%;
   max-width: 1000px;
   margin-inline: auto;
 }
 @media (min-width: 760px) {
-  .grid[data-n="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid:not(.is-focus)[data-n="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .tile {
@@ -995,6 +997,9 @@ button, input { font-family: inherit; }
 /* "离开会议"点第一下只是待确认 */
 .ctl--armed { border-color: var(--danger); background: var(--danger-hover); color: #fff; }
 .ctl--armed .icon { color: #fff; }
+
+/* 顶栏那几个文字按钮的"选中"态 (布局按钮用: 放大模式下高亮) */
+.btn--text.on { color: var(--brand); background: var(--brand-weak); font-weight: 600; }
 
 /* 设备下拉 + 试麦电平条 (首页) */
 .devsel { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }

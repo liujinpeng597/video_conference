@@ -257,6 +257,10 @@ try {
   // 第 1 个标签页开一个新房间, 读出房间号; 另外两个用同一个房间号进房
   // 三个界面: 会议首页 / 个人中心 / 会议中 —— 顶栏两个 tab 能来回切, 个人中心有昵称和改密码
   await activate(cdp, pages[0].sessionId);
+  // 首页的试麦电平条要跟着摄像头/麦克风一起出来 (媒体是异步拿到的, 等它挂上)
+  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.meter__bar')`, 15000, '首页试麦电平条');
+  console.log('首页: 试麦电平条在');
+
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goProfile(); return true; })()`);
   // 视图切换是 <transition mode="out-in">, 得等新视图真的挂上 (一次 $nextTick 不够)
   await waitIn(cdp, pages[0].sessionId,
@@ -449,6 +453,64 @@ try {
       vm.focusPid = '';
       return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen };
     })()`);
+  {   // 会中改名: 走真实 UI 路径 (点"改名" -> 填 -> 提交), 房间里要立刻变
+    const rn = await evalIn(cdp, pages[0].sessionId, `(async () => {
+        const vm = ${VM};
+        if (!vm.membersOpen) vm.toggleMembers();
+        await vm.$nextTick();
+        const btns = [...document.querySelectorAll('#room-members .prow__act .btn')].map((b) => b.textContent.trim());
+        const btn = [...document.querySelectorAll('#room-members .prow__act .btn')].find((b) => b.textContent.trim() === '改名');
+        if (btn) btn.click();
+        await vm.$nextTick();
+        const form = document.querySelector('#room-members form');
+        const out = { btns, renaming: vm.renaming, hasForm: !!form };
+        if (form) {
+          const input = form.querySelector('input');
+          input.value = 'E2E新名';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          await vm.$nextTick();
+          out.inputVal = vm.renameInput;
+          if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          await new Promise((r) => setTimeout(r, 600));
+          out.displayName = vm.displayName;
+          out.selfName = (vm.participants.find((p) => p.me) || {}).name;
+          out.renamingAfter = vm.renaming;
+        }
+        vm.membersOpen = false;
+        return out;
+      })()`);
+    if (rn.hasForm && rn.inputVal === 'E2E新名' && rn.selfName === 'E2E新名') {
+      console.log('会中改名: 点改名 -> 填 -> 提交, 房间里立刻就是新名字');
+    } else {
+      failed = true;
+      console.error(`会中改名断言失败: ${JSON.stringify(rn)}`);
+    }
+  }
+
+  // 布局: 切到"我最大"之后, 自己那一格必须真的变大 (宽度铺满舞台、高度过半屏)
+  const big = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      vm.focusPid = '';
+      vm.cycleLayout();                       // 宫格 -> 我最大
+      await vm.$nextTick();
+      const tile = document.querySelector('.tile--focus');
+      const stage = document.querySelector('.stage');
+      const t = tile && tile.getBoundingClientRect();
+      const s = stage.getBoundingClientRect();
+      const others = [...document.querySelectorAll('.tile:not(.tile--focus)')]
+        .map((e) => Math.round(e.getBoundingClientRect().width));
+      const out = { focus: vm.focusPid, mine: vm.myPid, tw: t ? Math.round(t.width) : 0,
+                    th: t ? Math.round(t.height) : 0, sw: Math.round(s.width), vh: innerHeight, others };
+      vm.focusPid = '';
+      return out;
+    })()`);
+  if (big.focus === big.mine && big.tw > big.sw * 0.9 && big.th > big.vh * 0.45) {
+    console.log(`布局: 我最大 -> ${big.tw}x${big.th} (舞台宽 ${big.sw}, 屏高 ${big.vh}), 其余缩到 ${big.others.join('/')}px`);
+  } else {
+    failed = true;
+    console.error(`布局放大断言失败: ${JSON.stringify(big)}`);
+  }
+
   if (process.env.E2E_SHOT_MEMBERS) {
     await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; if (!vm.membersOpen) vm.toggleMembers(); await vm.$nextTick(); return true; })()`);
     await sleep(400);
