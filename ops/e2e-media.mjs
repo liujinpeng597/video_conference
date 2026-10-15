@@ -565,8 +565,9 @@ try {
 
   // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
   if (process.env.E2E_SHOT) {
-    await activate(cdp, pages[1].sessionId);
-    const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[1].sessionId);
+    const tab = Math.min(pages.length - 1, Math.max(0, Number(process.env.E2E_SHOT_TAB ?? 1)));
+    await activate(cdp, pages[tab].sessionId);
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[tab].sessionId);
     writeFileSync(process.env.E2E_SHOT, Buffer.from(shot.data, 'base64'));
     console.log(`截图: ${process.env.E2E_SHOT}`);
   }

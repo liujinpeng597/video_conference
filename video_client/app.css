@@ -360,7 +360,9 @@ button, input { font-family: inherit; }
 /* 会议中: 撑满一屏, 中间滚动, 上下两条栏固定 */
 .app--room {
   height: 100dvh;
-  grid-template-rows: auto 1fr auto;
+  /* minmax(0, 1fr): 中间那行 (舞台) 允许被压小并自己滚动 —— 底部控制条现在按钮多,
+     换行后要长高, 不给中间行"可压缩"的话它会撑破 100dvh, 把控制条挤出屏幕。 */
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -620,7 +622,7 @@ button, input { font-family: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   padding: 10px 16px;
   background: var(--surface);
   border-top: 1px solid var(--line);
@@ -630,7 +632,7 @@ button, input { font-family: inherit; }
   align-items: center;
   gap: 6px;
   height: 36px;
-  padding: 0 16px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
   background: var(--surface);
@@ -644,6 +646,7 @@ button, input { font-family: inherit; }
 .ctl:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
 .ctl:active:not(:disabled) { transform: translateY(1px); }
 .ctl:disabled { opacity: .5; cursor: not-allowed; }
+.ctl__label { white-space: nowrap; }   /* 标签别被挤断成两行 */
 .ctl[aria-pressed="false"] {
   border-color: var(--danger-line);
   background: var(--danger-weak);
@@ -910,6 +913,12 @@ button, input { font-family: inherit; }
 }
 
 /* ---------------------------------------------------------------- 窄屏 */
+/* 控制条按钮多了 (含主持人专属): 窄屏去掉图标只留文字, 保证一排放得下。
+   控制条必须是一行 —— 聊天抽屉和浮动表情按固定高度避让它, 长了就算不准。 */
+@media (max-width: 680px) {
+  .ctl .icon { display: none; }
+}
+
 @media (max-width: 560px) {
   .topbar { height: 52px; }
   .topbar__right { gap: 6px; }
