@@ -722,6 +722,26 @@ check "主持人走后角色交给剩下的人" "$KPID3" "$(jstr host)"
 call POST /api/rooms/leave '{}' "$TOKEN_K3"
 
 echo
+echo "---- 会议历史 ----"
+# 进/离房时写 room_visits 表 (直接写 PG, 不走 Kafka: 历史是要读的强一致数据)
+USER_HI="hi$SUF"
+call POST /api/register "{\"username\":\"$USER_HI\",\"password\":\"hunter2\"}"
+TOKEN_HI=$(jstr token)
+call GET /api/history '' "$TOKEN_HI"
+check "新账号还没有历史" "0" "$(jcount room)"
+call POST /api/rooms/enter '{}' "$TOKEN_HI"
+HIROOM=$(jstr room)
+call GET /api/history '' "$TOKEN_HI"
+check "进过房之后有 1 条" "1" "$(jcount room)"
+contains "历史里就是这个房间号" "$(body)" "$HIROOM"
+contains "还没离开 = 进行中 (left 为 0)" "$(body)" '"left":0'
+call POST /api/rooms/leave '{}' "$TOKEN_HI"
+call GET /api/history '' "$TOKEN_HI"
+check "离开后补上了 left_at" "0" "$(printf '%s' "$(body)" | grep -o '"left":0' | wc -l | tr -d ' ')"
+call GET /api/history
+check "未登录看历史 401" "401" "$(status)"
+
+echo
 echo "---- 修改密码 ----"
 USER_PW="pw$SUF"
 call POST /api/register "{\"username\":\"$USER_PW\",\"password\":\"hunter2\"}"

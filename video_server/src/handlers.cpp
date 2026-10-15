@@ -614,6 +614,10 @@ Resp apiRoomsEnter(const Request& req) {
             // 房间号自动分配 = 这次进房顺带建了个新房间。
             if (!asked) events::roomEvent("room_created", raw, user);
             events::roomEvent("participant_joined", raw, user);
+            {   // 会议历史 (room_visits 表): 尽力而为, 失败不影响进房
+                std::string herr;
+                db::recordVisit(user, raw, &herr);
+            }
             break;
         case presence::Enter::Full:
             return errJson(409, "房间满了");
@@ -896,6 +900,33 @@ Resp apiPassword(const Request& req) {
     }
 }
 
+// 我的会议历史: 最近进过的房间 + 时长。数据来自 room_visits 表 (进/离房时写)。
+Resp apiHistory(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    long long limit = queryInt(req.query, "limit", 20);
+    if (limit < 1 || limit > 100) limit = 20;
+    std::vector<db::Visit> visits;
+    std::string err;
+    if (!db::recentVisits(user, limit, &visits, &err)) {
+        return errJson(500, "读会议历史失败：" + err);
+    }
+    std::string arr = "[";
+    bool first = true;
+    for (const db::Visit& v : visits) {
+        if (!first) arr += ',';
+        first = false;
+        arr += "{\"room\":" + json::quote(v.room) +
+               ",\"joined\":" + std::to_string(v.joinedSec) +
+               ",\"left\":" + std::to_string(v.leftSec) +
+               ",\"seconds\":" + std::to_string(v.seconds) + "}";
+    }
+    arr += ']';
+    return okJson("{\"visits\":" + arr + "}");
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -942,6 +973,10 @@ Resp apiRoomsLeave(const Request& req) {
     std::string err;
     if (!presence::leave(req.token, &err)) return errJson(500, "离开房间失败：" + err);
     if (!room.empty()) events::roomEvent("participant_left", room, user);
+    {   // 会议历史: 把这次访问的 left_at 补上 (尽力而为, 失败不影响离开)
+        std::string herr;
+        db::closeVisit(user, room, &herr);
+    }
     return okJson("{\"ok\":true}");
 }
 
@@ -976,6 +1011,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/password") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiPassword(req);
+    }
+    if (req.path == "/api/history") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiHistory(req);
     }
     if (req.path == "/api/rooms/enter") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");

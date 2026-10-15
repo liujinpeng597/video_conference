@@ -98,6 +98,7 @@
         booting: true,
         pwOpen: false,      // 大厅里"修改密码"表单是否展开
         pw: { old: '', next: '', confirm: '', error: '', done: false },
+        history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
 
         token: '',
         user: '',
@@ -333,6 +334,32 @@
         // 大厅不发别的请求, 所以定时确认会话还有效: 被别处登录挤下线的那台会自己回登录页,
         // 而不是一直"看起来还登着", 直到点了什么才发现。
         this.checkSession();
+        this.loadHistory();   // 大厅里顺便把"最近会议"拉一份
+      },
+
+      async loadHistory() {
+        try {
+          const r = await this.authed('GET', '/api/history?limit=10');
+          this.history = Array.isArray(r.visits) ? r.visits : [];
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.history = [];   // 读不到就当没有, 不打扰
+        }
+      },
+      histDur(v) {
+        const s = Math.max(0, Math.floor(v.seconds || 0));
+        const pad = (n) => String(n).padStart(2, '0');
+        const t = s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`
+                            : `${Math.floor(s / 60)}:${pad(s % 60)}`;
+        return (v.left ? '时长 ' : '进行中 · ') + t;
+      },
+      histWhen(v) {
+        const d = new Date((v.joined || 0) * 1000);
+        const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+        if (mins < 1) return '刚刚';
+        if (mins < 60) return mins + ' 分钟前';
+        if (mins < 1440) return Math.floor(mins / 60) + ' 小时前';
+        return (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
       },
 
       checkSession() {

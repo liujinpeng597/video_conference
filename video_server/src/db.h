@@ -54,6 +54,20 @@ bool deleteUserTokens(long long userId, const std::string& keepHash, std::string
 // 改密码 (hash 已经是算好的 Argon2id 字符串)
 bool updatePassword(long long userId, const std::string& hash, std::string* err);
 
+// 会议历史 (room_visits 表): 进房记一条, 离开补 left_at。
+// recordVisit 会先把这个人上一条没关的先关掉 (被踢/掉线/崩溃都可能没走到 leave)。
+bool recordVisit(const std::string& username, const std::string& room, std::string* err);
+bool closeVisit(const std::string& username, const std::string& room, std::string* err);
+
+struct Visit {
+    std::string room;
+    long long joinedSec = 0;   // 进房时间 (epoch 秒, 前端自己格式化)
+    long long leftSec = 0;     // 0 = 还在会里
+    long long seconds = 0;     // 时长 (进行中的按"到现在"算)
+};
+bool recentVisits(const std::string& username, long long limit, std::vector<Visit>* out,
+                  std::string* err);
+
 // 用户总数。给 /api/health 用, 顺便当"数据库还活着吗"的探针。
 bool countUsers(long long* out, std::string* err);
 

@@ -269,6 +269,58 @@ bool updatePassword(long long userId, const std::string& hash, std::string* err)
     return true;
 }
 
+bool closeVisit(const std::string& username, const std::string& room, std::string* err) {
+    err->clear();
+    PGresult* r = nullptr;
+    if (room.empty()) {
+        r = query(err,
+                  "UPDATE room_visits SET left_at = now() WHERE username = $1 AND left_at IS NULL",
+                  {username});
+    } else {
+        r = query(err,
+                  "UPDATE room_visits SET left_at = now() "
+                  "WHERE username = $1 AND room = $2 AND left_at IS NULL",
+                  {username, room});
+    }
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool recordVisit(const std::string& username, const std::string& room, std::string* err) {
+    // 先把上一条没关的关掉, 再记新的
+    if (!closeVisit(username, std::string(), err)) return false;
+    PGresult* r = query(err, "INSERT INTO room_visits (username, room) VALUES ($1, $2)",
+                        {username, room});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool recentVisits(const std::string& username, long long limit, std::vector<Visit>* out,
+                  std::string* err) {
+    err->clear();
+    PGresult* r = query(err,
+                        "SELECT room,"
+                        "       EXTRACT(EPOCH FROM joined_at)::bigint,"
+                        "       COALESCE(EXTRACT(EPOCH FROM left_at)::bigint, 0),"
+                        "       EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))::bigint "
+                        "  FROM room_visits WHERE username = $1 "
+                        " ORDER BY joined_at DESC LIMIT $2",
+                        {username, std::to_string(limit)});
+    if (r == nullptr) return false;
+    for (int i = 0; i < PQntuples(r); ++i) {
+        Visit v;
+        v.room = PQgetvalue(r, i, 0);
+        v.joinedSec = std::strtoll(PQgetvalue(r, i, 1), nullptr, 10);
+        v.leftSec = std::strtoll(PQgetvalue(r, i, 2), nullptr, 10);
+        v.seconds = std::strtoll(PQgetvalue(r, i, 3), nullptr, 10);
+        out->push_back(std::move(v));
+    }
+    PQclear(r);
+    return true;
+}
+
 bool countUsers(long long* out, std::string* err) {
     err->clear();
     PGresult* r = query(err, "SELECT count(*) FROM users", {});

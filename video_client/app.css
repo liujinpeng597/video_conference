@@ -427,6 +427,18 @@ button, input { font-family: inherit; }
 .card__title { margin-bottom: 16px; font-size: 16px; font-weight: 500; }
 .pwform { margin-top: 14px; gap: 12px; }
 
+/* 最近会议列表 */
+.hist { display: flex; flex-direction: column; gap: 6px; }
+.hist__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.hist__row:first-child { border-top: 0; }
+.hist__meta { flex: 1; min-width: 0; font-size: 12px; color: var(--text-3); }
+
 .devrow { display: flex; flex-wrap: wrap; gap: 8px; }
 .devbtn {
   display: inline-flex;

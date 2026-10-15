@@ -174,6 +174,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
 | GET | `/api/me` | - | `{"user"}` |
 | POST | `/api/password` | `{"old_password","new_password"}` | `{"ok":true}`；成功后会吊销其它令牌 |
+| GET | `/api/history?limit=N` | - | `{"visits":[{"room","joined","left","seconds"}]}`（我的会议历史，`left` 为 0 = 进行中） |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
 | GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `locked` / `removed`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
