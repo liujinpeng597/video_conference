@@ -668,6 +668,28 @@ check "未登录不能上报静音 401" "401" "$(status)"
 call POST /api/rooms/mic '{}' "$TOKEN_H1"
 check "缺 on 字段 400" "400" "$(status)"
 
+# 屏幕共享状态同步 (谁在共享, 别人看得见)
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "默认没人共享" "0" "$(printf '%s' "$(body)" | grep -o '"share":true' | wc -l | tr -d ' ')"
+call POST /api/rooms/share '{"on":true}' "$TOKEN_H1"
+check "上报共享 200" "200" "$(status)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "另一方能看见他在共享" "1" "$(printf '%s' "$(body)" | grep -o '"share":true' | wc -l | tr -d ' ')"
+call POST /api/rooms/share '{"on":false}' "$TOKEN_H1"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "停止共享后不再有 share:true" "0" "$(printf '%s' "$(body)" | grep -o '"share":true' | wc -l | tr -d ' ')"
+call POST /api/rooms/share '{"on":true}' "$TOKEN_H3"
+check "不在房间不能上报共享 409" "409" "$(status)"
+call POST /api/rooms/share '{"on":true}'
+check "未登录不能上报共享 401" "401" "$(status)"
+
+# 会中改名: 不用重进, 房间里立刻显示新名字
+call POST /api/profile '{"display_name":"改过的名"}' "$TOKEN_H1"
+check "改昵称 200" "200" "$(status)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+contains "会中改名立刻生效 (别人那一拍就看到)" "$(body)" '"name":"改过的名"'
+call POST /api/profile '{"display_name":""}' "$TOKEN_H1"
+
 call POST /api/rooms/leave '{}' "$TOKEN_H1"
 call POST /api/rooms/leave '{}' "$TOKEN_H2"
 

@@ -43,6 +43,12 @@
   const peerRebuilds = new Map();  // pid -> 看门狗已重建次数 (连上清零, 上限 3 次)
   let reactionSeq = 0;             // 表情浮动体的自增 key
   const statsPrev = new Map();     // pid -> 上一次 getStats 的累计值 (算码率/丢包率要用增量)
+  // 声音: 一个 AudioContext + 每个人的 analyser (说话高亮 / 试麦电平条都用它)
+  let audioCtx = null;
+  const analysers = new Map();     // pid(或 'me') -> { src, an }
+  let levelTimer = 0;
+  let prevPids = new Set();        // 上一拍的成员, 用来"有人进/出"提示音
+  let prevHands = new Map();       // pid -> 上一拍有没有举手
   // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
   let shareStream = null;          // 正在共享的 getDisplayMedia 流
   // 虚拟背景(简易人像模式)的处理链路: 摄像头 -> 隐藏 video -> canvas -> captureStream
@@ -129,6 +135,15 @@
         // 通话质量 (每 2 秒从 getStats 采样一次): pid -> { inKbps, outKbps, lossPct, jitterMs, rttMs, q }
         peerStats: {},
         avFail: {},         // pid -> 1 (头像加载失败, 退回显示首字母)
+        membersOpen: false, // 成员面板
+        speaking: {},       // pid -> true (正在说话, 只写变化, 免得每 150ms 重渲染)
+        micLevel: 0,        // 本地麦克风电平 (试麦条)
+        devices: { mic: [], cam: [] },
+        devSel: { mic: '', cam: '' },
+        soundOn: true,      // 进/出、举手的提示音
+        leaveArmed: false,  // "离开会议"点第一下只是待确认
+        renaming: false,
+        renameInput: '',
         // 聊天: 服务端只留最近 50 条, 客户端内存里最多留 200 条
         chatOpen: false,
         chatMessages: [],   // [{ id, from, name, text }]
@@ -160,6 +175,7 @@
         healthTimer: 0,
         sessTimer: 0,
         statsTimer: 0,
+        leaveTimer: 0,
         copyTimer: 0,
       };
     },
@@ -357,6 +373,7 @@
         this.checkSession();
         this.loadHistory();   // 大厅里顺便把"最近会议"拉一份
         this.loadMe();        // 昵称 / 头像
+        this.loadDevices();   // 设备下拉
       },
 
       // "加入会议"那个大按钮: 把焦点送到房间号输入框
@@ -716,6 +733,11 @@
           this.lastHandledSeq = 0;
           this.resetChat();
           this.avFail = {};       // 头像加载失败的记录, 换房间要清
+          prevPids.clear();       // 提示音基线: 刚进房这一拍不响
+          prevHands.clear();
+          this.membersOpen = false;
+          this.focusPid = '';
+          this.startLevelTimer();
           this.view = 'room';
           this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
@@ -753,6 +775,7 @@
           this.participants = r.participants;
           const me = r.participants.find((p) => p.me);
           if (me) this.myPid = me.id;
+          this.noteArrivals(r.participants);   // 有人进/出/举手 -> 提示音
         }
       },
 
@@ -775,6 +798,7 @@
       toggleChat() {
         this.chatOpen = !this.chatOpen;
         if (this.chatOpen) {
+          this.membersOpen = false;   // 两个抽屉都靠右, 只留一个
           this.chatUnread = 0;
           this.chatError = '';
           this.scrollChat();
@@ -914,6 +938,184 @@
         }
       },
 
+      // --------------------------------------------------------- 声音 / 电平
+      // 一个 AudioContext 反复用; 每个人 (含自己) 挂一个 analyser 算音量。
+      actx() {
+        if (!audioCtx) {
+          const C = window.AudioContext || window.webkitAudioContext;
+          if (!C) return null;
+          audioCtx = new C();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+        return audioCtx;
+      },
+      attachAnalyser(key, stream) {
+        if (!stream || stream.getAudioTracks().length === 0) return;
+        if (analysers.has(key)) return;
+        const ctx = this.actx();
+        if (!ctx) return;
+        try {
+          const src = ctx.createMediaStreamSource(stream);
+          const an = ctx.createAnalyser();
+          an.fftSize = 512;
+          src.connect(an);   // 只分析, 不接 destination: 否则会把声音再放一遍
+          analysers.set(key, { src, an, buf: new Uint8Array(an.fftSize) });
+        } catch (err) { /* 流没有音轨 / 已结束, 忽略 */ }
+      },
+      detachAnalysers() {
+        for (const a of analysers.values()) { try { a.src.disconnect(); } catch (err) {} }
+        analysers.clear();
+      },
+      startLevelTimer() {
+        if (levelTimer) return;
+        levelTimer = setInterval(this.sampleLevels, 150);
+      },
+      stopLevelTimer() {
+        if (levelTimer) { clearInterval(levelTimer); levelTimer = 0; }
+        this.speaking = {};
+        this.micLevel = 0;
+      },
+      // 说话高亮只写"变没变": 每 150ms 都写响应式的话整屏会跟着重渲染
+      sampleLevels() {
+        for (const [key, a] of analysers) {
+          a.an.getByteTimeDomainData(a.buf);
+          let sum = 0;
+          for (let i = 0; i < a.buf.length; i++) {
+            const v = (a.buf[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / a.buf.length);
+          const sp = rms > 0.02;
+          if (key === 'me') {
+            const lv = Math.round(Math.min(1, rms * 10) * 12) / 12;   // 量化成 12 档
+            if (lv !== this.micLevel) this.micLevel = lv;
+            if (this.myPid && sp !== !!this.speaking[this.myPid]) this.speaking[this.myPid] = sp;
+          } else if (sp !== !!this.speaking[key]) {
+            this.speaking[key] = sp;
+          }
+        }
+      },
+
+      // 提示音: 用振荡器现场合成两声短音, 不引音频文件
+      beep(up) {
+        if (!this.soundOn) return;
+        const ctx = this.actx();
+        if (!ctx) return;
+        const t0 = ctx.currentTime;
+        const notes = up ? [[0, 660], [0.12, 880]] : [[0, 560], [0.12, 420]];
+        for (const [dt, f] of notes) {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = 'sine';
+          o.frequency.value = f;
+          g.gain.setValueAtTime(0.0001, t0 + dt);
+          g.gain.exponentialRampToValueAtTime(0.1, t0 + dt + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
+          o.connect(g).connect(ctx.destination);
+          o.start(t0 + dt);
+          o.stop(t0 + dt + 0.15);
+        }
+      },
+      // 有人进 / 有人走 / 有人举手 -> 提示音 (第一拍只记基线, 不然一进房就响一串)
+      noteArrivals(members) {
+        const now = new Set(members.map((m) => m.id));
+        const hands = new Map(members.map((m) => [m.id, !!m.hand]));
+        if (prevPids.size > 0) {
+          for (const id of now) if (!prevPids.has(id) && id !== this.myPid) { this.beep(true); break; }
+          for (const id of prevPids) if (!now.has(id)) { this.beep(false); break; }
+          for (const [id, h] of hands) {
+            if (id !== this.myPid && h && !prevHands.get(id)) { this.beep(true); break; }
+          }
+        }
+        prevPids = now;
+        prevHands = hands;
+      },
+
+      // ------------------------------------------------------------- 设备
+      async loadDevices() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        try {
+          const list = await navigator.mediaDevices.enumerateDevices();
+          this.devices.mic = list.filter((d) => d.kind === 'audioinput');
+          this.devices.cam = list.filter((d) => d.kind === 'videoinput');
+          const st = this.media.stream;
+          const vt = st && st.getVideoTracks()[0];
+          const at = st && st.getAudioTracks()[0];
+          this.devSel.cam = (vt && vt.getSettings().deviceId) || localStorage.getItem('tp_dev_cam') || '';
+          this.devSel.mic = (at && at.getSettings().deviceId) || localStorage.getItem('tp_dev_mic') || '';
+        } catch (err) { /* 没授权时列表可能是空的, 用系统默认设备就行 */ }
+      },
+      async switchDevice(kind, id) {
+        if (kind === 'mic') { this.devSel.mic = id; localStorage.setItem('tp_dev_mic', id); }
+        else { this.devSel.cam = id; localStorage.setItem('tp_dev_cam', id); }
+        if (!this.media.stream) return;
+        const want = {
+          audio: this.devSel.mic ? { deviceId: { exact: this.devSel.mic } } : true,
+          video: this.devSel.cam ? { deviceId: { exact: this.devSel.cam } } : true,
+        };
+        const old = this.media.stream;
+        try {
+          const s = await navigator.mediaDevices.getUserMedia(want);
+          // 先把新轨换到每条连接上, 再停旧轨 (反了对端会黑一下)
+          for (const state of calls.values()) {
+            for (const t of s.getTracks()) {
+              const sender = state.pc.getSenders().find((x) => x.track && x.track.kind === t.kind);
+              if (sender) await sender.replaceTrack(t).catch(() => {});
+            }
+          }
+          old.getTracks().forEach((t) => t.stop());
+          this.applyStream(s);
+        } catch (err) {
+          this.media.error = '换设备失败：' + (err.message || err);
+        }
+      },
+
+      // --------------------------------------------------- 成员面板 / 布局
+      toggleMembers() {
+        this.membersOpen = !this.membersOpen;
+        if (this.membersOpen) this.chatOpen = false;   // 两个抽屉都靠右, 只留一个
+      },
+      // 让某个人把自己静音 (和他自己按静音一样, 服务端不下发强制指令)
+      muteOne(pid) {
+        this.sendSignal(pid, 'mute-all', {});
+        this.flash('已请对方静音');
+      },
+      // 布局: 宫格 -> 我最大 -> 主持人最大 -> 宫格 (点某一格放大也是同一套 focusPid)
+      cycleLayout() {
+        // 自己就是主持人时"我"和"主持人"是同一个人, 去重; 没有主持人也少一档
+        const modes = [...new Set(['', this.myPid, this.host || ''])];
+        const i = modes.indexOf(this.focusPid);
+        this.focusPid = modes[(i + 1) % modes.length];
+      },
+      layoutName() {
+        if (!this.focusPid) return '布局';
+        if (this.focusPid === this.myPid) return '我';
+        if (this.focusPid === this.host) return '主持人';
+        return '放大';
+      },
+      leaveClick() {
+        if (this.leaveArmed) { this.leave(); return; }
+        this.leaveArmed = true;
+        clearTimeout(this.leaveTimer);
+        this.leaveTimer = setTimeout(() => { this.leaveArmed = false; }, 3000);
+      },
+      async saveMyName() {
+        const name = this.renameInput.trim();
+        try {
+          await this.authed('POST', '/api/profile', { display_name: name });
+          this.displayName = name;
+          this.renaming = false;
+          this.scheduleSync(0);   // 服务端已经把成员表里的名字改了, 补一拍就显示新名字
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.flash(err.message || '改名失败');
+        }
+      },
+      publishShare(on) {
+        if (this.view !== 'room') return;
+        this.authed('POST', '/api/rooms/share', { on }).then(() => this.scheduleSync(0)).catch(() => {});
+      },
+
       // --------------------------------------------------------- 通话质量
       // 每 2 秒从每条 PeerConnection 的 getStats 采样, 算"收/发码率 + 丢包率 + 抖动 + 往返"。
       // 速率用"这次累计值 - 上次累计值"除以时间差 —— 标准做法。浏览器自己也在做拥塞控制,
@@ -921,6 +1123,7 @@
       async sampleStats() {
         for (const [pid, state] of calls) {
           if (!state.pc || state.pc.connectionState === 'closed') continue;
+          if (state.stream) this.attachAnalyser(pid, state.stream);   // 说话高亮 / 提示音要的音量分析
           let rep = null;
           try {
             rep = await state.pc.getStats();
@@ -979,11 +1182,14 @@
         clearInterval(this.statsTimer);
         clearTimeout(this.noticeTimer);
         clearTimeout(this.sessTimer);
+        clearTimeout(this.leaveTimer);
         this.syncTimer = 0;
         this.clockTimer = 0;
         this.statsTimer = 0;
         this.noticeTimer = 0;
         this.sessTimer = 0;
+        this.leaveTimer = 0;
+        this.leaveArmed = false;
       },
 
       scheduleSync(delay) {
@@ -1348,7 +1554,14 @@
           this.media.error = '这个环境不给用摄像头。用 http://localhost 打开，或者直接进房间。';
           return;
         }
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+        // 有存过设备选择就用它, 没有就用系统默认
+        const savedMic = localStorage.getItem('tp_dev_mic');
+        const savedCam = localStorage.getItem('tp_dev_cam');
+        const want = {
+          video: savedCam ? { deviceId: { exact: savedCam } } : true,
+          audio: savedMic ? { deviceId: { exact: savedMic } } : true,
+        };
+        navigator.mediaDevices.getUserMedia(want).then((stream) => {
           this.applyStream(stream);
         }).catch((err) => {
           this.media.error = err && err.name === 'NotAllowedError'
@@ -1417,6 +1630,9 @@
         this.media.cam = stream.getVideoTracks().length > 0;
         this.media.mic = stream.getAudioTracks().length > 0;
         this.syncPreview();
+        this.attachAnalyser('me', stream);   // 试麦电平条 + 自己说话高亮
+        this.startLevelTimer();
+        this.loadDevices();                  // 设备列表 / 当前选中项
 
         // 如果授权弹窗比"加入会议"慢 (用户在大厅停留很久), 进房间时还没有轨道,
         // 那时建的是 recvonly 的连接。这里把轨道补上, addTrack 会自动触发重新协商。
@@ -1429,6 +1645,8 @@
 
       stopMedia() {
         this.stopBg();       // 处理链路的源(摄像头)要没了, 先拆掉
+        this.detachAnalysers();
+        this.stopLevelTimer();
         if (this.media.stream) {
           this.media.stream.getTracks().forEach((t) => t.stop());
           this.media.stream = null;
@@ -1486,6 +1704,7 @@
         }
         shareStream = stream;
         this.sharing = true;
+        this.publishShare(true);   // 让别人也看到"谁在共享"
         track.addEventListener('ended', () => this.stopShare());  // 浏览器共享条的"停止共享"
         for (const state of calls.values()) {
           const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
@@ -1506,6 +1725,7 @@
       stopShare() {
         if (!this.sharing) return;
         this.sharing = false;
+        this.publishShare(false);
         const track = shareStream && shareStream.getVideoTracks()[0];
         const camTrack = this.media.stream ? this.media.stream.getVideoTracks()[0] : null;
         for (const state of calls.values()) {

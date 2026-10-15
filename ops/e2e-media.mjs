@@ -434,6 +434,48 @@ try {
                 stage: Math.round(st.width), ctlTop: Math.round(ct.top) };
      })()`,
   );
+  // 成员面板 + 布局切换 (会中的新东西)
+  await activate(cdp, pages[0].sessionId);
+  const ui = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      vm.toggleMembers();
+      await vm.$nextTick();
+      const rows = document.querySelectorAll('.prow').length;
+      const acts = document.querySelectorAll('.prow__act .btn').length;
+      vm.toggleMembers();
+      await vm.$nextTick();
+      const seq = [];
+      for (let i = 0; i < 3; i++) { vm.cycleLayout(); seq.push(vm.focusPid); }
+      vm.focusPid = '';
+      return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen };
+    })()`);
+  if (process.env.E2E_SHOT_MEMBERS) {
+    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; if (!vm.membersOpen) vm.toggleMembers(); await vm.$nextTick(); return true; })()`);
+    await sleep(400);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_MEMBERS, Buffer.from(s.data, 'base64'));
+    console.log(`截图(成员面板): ${process.env.E2E_SHOT_MEMBERS}`);
+    await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).membersOpen = false; return true; })()`);
+  }
+  // 自己是主持人时"我/主持人"是同一档, 所以这里只要求"能在大格和宫格之间来回切";
+  // 非主持人的主持人档在下面 (tab1) 单独验证。
+  await activate(cdp, pages[1].sessionId);
+  const ui2 = await evalIn(cdp, pages[1].sessionId, `(() => {
+      const vm = ${VM};
+      const seq = [];
+      for (let i = 0; i < 3; i++) { vm.cycleLayout(); seq.push(vm.focusPid); }
+      vm.focusPid = '';
+      return { seq, mine: vm.myPid, host: vm.host };
+    })()`);
+  const cycles = ui.seq.some((x) => x === '') && ui.seq.some((x) => x !== '');
+  const hostMode = ui2.seq[0] === ui2.mine && ui2.seq[1] === ui2.host && ui2.seq[2] === '' && !!ui2.host;
+  if (ui.rows === 3 && ui.acts >= 1 && cycles && hostMode) {
+    console.log(`成员面板: ${ui.rows} 行, 主持人有 ${ui.acts} 个操作按钮; 布局 宫格/我/主持人 正常`);
+  } else {
+    failed = true;
+    console.error(`成员面板 / 布局断言失败: ${JSON.stringify({ ui, ui2, cycles, hostMode })}`);
+  }
+
   if (roomBox.stage > roomBox.w * 0.7 && roomBox.ctlTop > roomBox.vh * 0.7) {
     console.log(`会议中布局: 舞台铺满 ${roomBox.stage}/${roomBox.w}px, 控制条贴在底部`);
   } else {
@@ -562,6 +604,12 @@ try {
           `共享中: 连接保持, tab0 发 +${after[0].outBytes - before[0].outBytes} 字节, ` +
             `对端收 +${after[1].inBytes - before[1].inBytes} / +${after[2].inBytes - before[2].inBytes} 字节`,
         );
+        // 共享状态同步: 对端要看得见"是 tab0 在共享"
+        await activate(cdp, pages[1].sessionId);
+        const shareSeen = await evalIn(cdp, pages[1].sessionId,
+          `(${VM})?.remotes?.some((p) => p.share === true)`);
+        if (shareSeen) console.log('共享状态同步: 对端看到 share=true');
+        else { failed = true; console.error('共享状态同步断言失败: 对端没看到谁在共享'); }
       } else {
         failed = true;
         console.error(

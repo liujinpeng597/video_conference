@@ -103,6 +103,8 @@ std::string peersJson(const std::vector<presence::Member>& members, const std::s
         arr += m.hand ? "true" : "false";
         arr += ",\"mic\":";
         arr += m.mic ? "true" : "false";
+        arr += ",\"share\":";
+        arr += m.share ? "true" : "false";
         arr += ",\"av\":";
         arr += std::to_string(m.avatarVer);
         arr += '}';
@@ -980,6 +982,10 @@ Resp apiProfile(const Request& req) {
     }
     std::string err;
     if (!db::setDisplayName(user, name, &err)) return errJson(500, "保存昵称失败：" + err);
+    {   // 正在开会的话, 房间成员表里的显示名也一起改掉 (会中改名立刻生效, 不用重进)
+        std::string nerr;
+        presence::setName(req.token, name.empty() ? user : name, &nerr);
+    }
     return okJson("{\"ok\":true}");
 }
 
@@ -1052,6 +1058,25 @@ Resp apiAvatarGet(const Request& req) {
         return r;
     }
     return errJson(404, "这个人没有头像");
+}
+
+// 屏幕共享状态上报: 让房间里别人看得见是谁在共享 (灰底那个"正在共享屏幕"角标)。
+Resp apiRoomsShare(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    bool on = true;
+    if (!json::getBool(req.body, "on", &on)) return errJson(400, "请求体里要有 on (布尔)");
+    std::string err;
+    switch (presence::setShare(req.token, on, &err)) {
+        case presence::Share::Ok:
+            return okJson(std::string("{\"ok\":true,\"share\":") + (on ? "true}" : "false}"));
+        case presence::Share::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "上报共享状态失败：" + err);
+    }
 }
 
 Resp apiIce(const Request& req) {
@@ -1175,6 +1200,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/mic") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsMic(req);
+    }
+    if (req.path == "/api/rooms/share") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsShare(req);
     }
     if (req.path == "/api/rooms/kick") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");

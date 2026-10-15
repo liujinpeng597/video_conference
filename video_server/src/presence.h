@@ -32,6 +32,7 @@ struct Member {
     bool live = false;  // seen 还在 TTL 内
     bool hand = false;  // 举手 (单人标志, 存房间 hash 的 @hand:<token> 字段)
     bool mic = true;    // 麦克风开着 (存 @mic:<token>; 默认开)
+    bool share = false; // 正在共享屏幕 (存 @share:<token>) —— 让别人看得见是谁在共享
     long long avatarVer = 0;  // 头像版本 (存 @av:<token>; 0 = 没头像), 给图片 URL 当缓存指纹
 };
 
@@ -102,6 +103,14 @@ Mic setMic(const std::string& token, bool on, std::string* err);
 // 头像版本上报 (进房后调一次): 房间成员表里带上它, 别人才知道该拉哪一版头像。
 enum class Ava { Ok, NotInRoom, Error };
 Ava setAvatarVer(const std::string& token, long long ver, std::string* err);
+
+// 屏幕共享状态上报 (让别人看得见是谁在共享)
+enum class Share { Ok, NotInRoom, Error };
+Share setShare(const std::string& token, bool on, std::string* err);
+
+// 会中改名: 直接改房间成员表那一格里显示的名字 (个人资料里的昵称同步改过)
+enum class Name { Ok, NotInRoom, Error };
+Name setName(const std::string& token, const std::string& name, std::string* err);
 
 // 按房间里的 pid 找这个人的会话令牌 (取头像用: 只有同房间的人能拿, 且不把用户名下发给别人)
 bool tokenByPid(const std::string& room, const std::string& pid, std::string* out, std::string* err);

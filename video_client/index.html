@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=19">
+<link rel="stylesheet" href="app.css?v=20">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -213,6 +213,23 @@
               <p class="field__err" role="alert" v-if="media.error">
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ media.error }}
               </p>
+
+              <div class="devsel" v-if="devices.cam.length > 1">
+                <label class="field__label" for="f-cam">摄像头</label>
+                <select id="f-cam" class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
+                  <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
+                </select>
+              </div>
+              <div class="devsel" v-if="devices.mic.length > 1">
+                <label class="field__label" for="f-mic">麦克风</label>
+                <select id="f-mic" class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
+                  <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
+                </select>
+              </div>
+              <div class="meter" v-if="media.stream">
+                <span class="meter__label">试麦</span>
+                <span class="meter__bar"><i :style="{ width: Math.round(micLevel * 100) + '%' }"></i></span>
+              </div>
             </div>
           </aside>
         </div>
@@ -315,6 +332,7 @@
         <div class="topbar__right">
           <span class="chip">{{ participants.length }} 人在线</span>
           <span class="chip chip--lock" v-if="locked" title="会议已锁定，新人进不来">已锁定</span>
+          <button class="btn btn--text" type="button" @click="cycleLayout" title="布局：宫格 / 我最大 / 主持人最大">{{ layoutName() }}</button>
           <button class="btn btn--text" type="button" @click="toggleFullscreen" title="全屏 (快捷键 f)">全屏</button>
           <button class="btn btn--text" type="button" v-if="amHost" @click="toggleLock">
             {{ locked ? '解锁会议' : '锁定会议' }}
@@ -332,7 +350,7 @@
         </button>
 
         <div class="grid" :data-n="tiles" :class="{ 'is-focus': focusPid }">
-          <article class="tile" :class="{ 'tile--focus': focusPid === myPid }" @click="toggleFocus(myPid)">
+          <article class="tile" :class="{ 'tile--focus': focusPid === myPid, 'tile--speaking': speaking[myPid] }" @click="toggleFocus(myPid)">
             <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn || sharing"></video>
             <div class="tile__off" v-if="(!camOn || !media.stream) && !sharing">
               <span class="avatar" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span>
@@ -343,7 +361,7 @@
           </article>
 
           <article class="tile" v-for="p in remotes" :key="p.id"
-                   :class="{ 'tile--focus': focusPid === p.id }" @click="toggleFocus(p.id)">
+                   :class="{ 'tile--focus': focusPid === p.id, 'tile--speaking': speaking[p.id] }" @click="toggleFocus(p.id)">
             <video :ref="(el) => bindRemoteVideo(el, p.id)" class="tile__video tile__video--remote"
                    autoplay playsinline></video>
             <div class="tile__off" v-if="!peerHasVideo[p.id]">
@@ -355,7 +373,7 @@
                     title="移出会议" @click.stop="kickMember(p.id)">
               <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
             </button>
-            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="">{{ avOk(p) ? '' : initial(p.name) }}</span>{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
+            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="">{{ avOk(p) ? '' : initial(p.name) }}</span>{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__share" v-if="p.share">共享中</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
             <span class="tile__q" :class="peerStats[p.id] ? 'tile__q--' + peerStats[p.id].q : ''"
                   v-if="qText(p.id)" :title="qTitle(p.id)">{{ qText(p.id) }}</span>
           </article>
@@ -401,6 +419,46 @@
             <svg class="icon" aria-hidden="true"><use href="#ic-send"></use></svg>
           </button>
         </form>
+      </aside>
+
+      <!-- 成员面板: 名单 + 主持人操作 (静音某人 / 移出) + 自己改名 + 提示音开关 -->
+      <aside class="chat" id="room-members" v-if="membersOpen" aria-label="成员">
+        <header class="chat__head">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user"></use></svg>
+          <h2 class="chat__title">成员 · {{ participants.length }}</h2>
+          <button class="chat__x" type="button" @click="toggleMembers" aria-label="关闭成员">×</button>
+        </header>
+
+        <div class="plist">
+          <div class="prow" v-for="m in participants" :key="m.id">
+            <span class="prow__av" aria-hidden="true">
+              <img v-if="m.me ? avatarSrc : avOk(m)" :src="m.me ? avatarSrc : avatarUrl(m)" alt="">
+              <template v-else>{{ initial(m.name) }}</template>
+            </span>
+            <span class="prow__name">{{ m.name }}<span class="prow__me" v-if="m.me">你</span></span>
+            <span class="prow__tags">
+              <span class="badge badge--host" v-if="m.id === host">主持人</span>
+              <span class="badge badge--share" v-if="m.share">共享中</span>
+              <span class="badge" v-if="!m.mic">已静音</span>
+              <span class="badge" v-if="m.hand">已举手</span>
+            </span>
+            <span class="prow__act">
+              <button class="btn btn--text" type="button" v-if="m.me" @click="renameInput = m.name; renaming = !renaming">改名</button>
+              <button class="btn btn--text" type="button" v-if="amHost && !m.me && m.mic" @click="muteOne(m.id)">静音</button>
+              <button class="btn btn--text" type="button" v-if="amHost && !m.me" @click="kickMember(m.id)">移出</button>
+            </span>
+          </div>
+        </div>
+
+        <form class="chat__form" v-if="renaming" @submit.prevent="saveMyName">
+          <input class="input chat__input" type="text" v-model.trim="renameInput" maxlength="20"
+                 placeholder="新的显示名" autocomplete="off">
+          <button class="chat__send" type="submit" aria-label="保存"><svg class="icon" aria-hidden="true"><use href="#ic-check"></use></svg></button>
+        </form>
+
+        <p class="pfoot">
+          <label class="check"><input type="checkbox" v-model="soundOn">进 / 出、举手的提示音</label>
+        </p>
       </aside>
 
       <div class="floaties" aria-hidden="true">
@@ -449,9 +507,13 @@
           <span class="ctl__label">聊天</span>
           <span class="ctl__badge" v-if="chatUnread > 0">{{ chatUnread > 9 ? '9+' : chatUnread }}</span>
         </button>
-        <button class="ctl ctl--leave" type="button" @click="leave">
+        <button class="ctl ctl--chat" type="button" :class="{ 'ctl--on': membersOpen }" @click="toggleMembers" :aria-expanded="membersOpen" aria-controls="room-members">
+          <svg class="icon" aria-hidden="true"><use href="#ic-user"></use></svg>
+          <span class="ctl__label">成员</span>
+        </button>
+        <button class="ctl ctl--leave" :class="{ 'ctl--armed': leaveArmed }" type="button" @click="leaveClick">
           <svg class="icon" aria-hidden="true"><use href="#ic-phone-off"></use></svg>
-          <span class="ctl__label">离开会议</span>
+          <span class="ctl__label">{{ leaveArmed ? '确认离开？' : '离开会议' }}</span>
         </button>
       </footer>
     </div>
@@ -571,7 +633,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=19"></script>
-<script src="app.js?v=19"></script>
+<script src="vendor/vue.global.prod.js?v=20"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

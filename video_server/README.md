@@ -184,6 +184,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
 | POST | `/api/rooms/mic` | `{"on":bool}` | `{"ok":true,"mic":bool}` |
+| POST | `/api/rooms/share` | `{"on":bool}` | `{"ok":true,"share":bool}`；让别人看得见谁在共享 |
 | POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
 | POST | `/api/rooms/lock` | `{"locked":bool}` | `{"ok":true,"locked":bool}`；只有主持人能调 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
@@ -191,7 +192,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 
 - 房间号留空（前端「创建会议」走的就是这条）就自动分配一个 **9 位数字**（首位非 0，如 `483920175`）——
   数字比字母好念好记。前端「加入会议」要求填房间号，不再靠"留空"来区分创建/加入。
-- `participants` 每项是 `{"id","name","me","hand","mic","av"}`。`id` 是**房间内的信令地址**，随机生成，
+- `participants` 每项是 `{"id","name","me","hand","mic","share","av"}`。`id` 是**房间内的信令地址**，随机生成，
   不是自增序号（自增的话别人能猜着号给你塞信令）。它只对同一个房间的人可见。
 - `/api/rooms/state` 同时干两件事：刷新心跳 + 取走信令收件箱。合成一个接口是为了让前端
   只用一条轮询循环。`since` 是客户端已经处理到的序号，服务端只把 `<= since` 的消息**过滤掉**
@@ -224,6 +225,9 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   别人的头像走 `GET /api/avatar?room=&pid=` 取 —— **按 pid 取、并且校验调用者在同一个房间**，
   这样既能看到头像又不用把登录名下发给房间里的人。头像换新后 `av` 变，URL 跟着变（缓存指纹）；
   已经在房里的人要重进一次才会看到新头像。
+- 屏幕共享状态也走同一套标志（`@share:<token>`）：共享者和别人在名单 / 画面角标上都能看到"谁在共享"。
+- **会中改名**：`POST /api/profile` 改昵称时，如果这人正在房间里，服务端顺手把他那一格
+  （`pid\x1f显示名\x1fseen`）重写掉，所以房间里**立刻**是新名字，不用退了重进。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；
