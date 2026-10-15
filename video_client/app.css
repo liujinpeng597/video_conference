@@ -761,6 +761,13 @@ button, input { font-family: inherit; }
 .chat__send:disabled { opacity: .5; cursor: not-allowed; }
 .chat__send .icon { color: currentColor; }
 
+/* 会议锁定态的小胶囊 (顶栏里, 所有人都看得到) */
+.chip--lock {
+  border-color: #f0c000;
+  background: #fff8e1;
+  color: #8a5a00;
+}
+
 /* 聊天按钮: 打开时主色高亮 (没有"关"的语义, 所以不走 danger 那套), 右上角带未读数 */
 .ctl--chat { position: relative; }
 .ctl--on { border-color: var(--brand); color: var(--brand); }

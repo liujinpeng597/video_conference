@@ -71,6 +71,7 @@ docker compose up -d --build
 - 虚拟背景（**简易人像模式**：中心人像清晰、四周模糊或纯色；摄像头→canvas→`captureStream`→
   `replaceTrack` 换出向视频轨，对端看到的就是处理后的画面。没做 AI 抠像，理由见 `video_client/README.md`）
 - 主持人（建房的人）：全体静音、把某个成员移出会议（服务端校验权限）
+- 会议锁定（主持人锁上后新人进不来，已在会的人不受影响）
 
 **还不能：**
 

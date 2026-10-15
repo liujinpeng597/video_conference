@@ -29,6 +29,7 @@ constexpr char kSep = '\x1f';
 // 房间 hash 里存"主持人 token"的字段名 (主持人 = 建房的人)。token 是十六进制串, 带 '@'
 // 的名字不会撞上; 它不是成员 —— parseMember 解析不出来会当成"不在", peersJson 会跳过。
 constexpr char kHostField[] = "@host";
+constexpr char kLockField[] = "@locked";   // "1" = 会议锁定, 只有主持人能进
 
 int64_t nowMs() {
     using namespace std::chrono;
@@ -164,7 +165,11 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     members->clear();
     size_t live = 0;
     bool alreadyHere = false;
+    std::string hostToken;
+    bool locked = false;
     for (const redis::Field& f : fields) {
+        if (f.name == kHostField) { hostToken = f.value; continue; }
+        if (f.name == kLockField) { locked = (f.value == "1"); continue; }
         Member m = parseMember(f.name, f.value, now);
         if (m.live) ++live;
         if (m.token == token) alreadyHere = true;
@@ -172,6 +177,8 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     }
     // 已经在房间里的人重新进不算新增 (比如刷新页面后又点了加入)
     if (!alreadyHere && live >= kMaxRoomPeers) return Enter::Full;
+    // 会议锁上以后, 只有主持人还能进来 (已经在里面的人不受影响)
+    if (!alreadyHere && locked && token != hostToken) return Enter::Locked;
 
     *pid = rnd::hex(6);  // 每次进房间换一个地址, 免得被人拿旧的乱发
 
@@ -216,11 +223,12 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 
 bool sync(const std::string& token, uint64_t since, std::string* room,
           std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
-          std::string* err) {
+          bool* locked, std::string* err) {
     room->clear();
     members->clear();
     msgs->clear();
     hostPid->clear();
+    *locked = false;
 
     Me me;
     if (!whereAmI(token, &me, err)) return err->empty();  // 不在房间 = 正常情况
@@ -268,6 +276,12 @@ bool sync(const std::string& token, uint64_t since, std::string* room,
     for (const redis::Field& f : fields) {
         if (f.name == kHostField) {
             hostToken = f.value;
+            break;
+        }
+    }
+    for (const redis::Field& f : fields) {
+        if (f.name == kLockField) {
+            *locked = (f.value == "1");
             break;
         }
     }
@@ -387,6 +401,24 @@ Mic setMic(const std::string& token, bool on, std::string* err) {
     if (!redis::hSet(roomKey(me.room), micField(token), on ? "1" : "0", err)) return Mic::Error;
     if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Mic::Error;
     return Mic::Ok;
+}
+
+Lock setLocked(const std::string& token, bool locked, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Lock::NotInRoom : Lock::Error;
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return Lock::Error;
+    std::string hostToken;
+    for (const redis::Field& f : fields) {
+        if (f.name == kHostField) {
+            hostToken = f.value;
+            break;
+        }
+    }
+    if (hostToken != token) return Lock::NotHost;   // 只有主持人能锁 / 解锁
+    if (!redis::hSet(roomKey(me.room), kLockField, locked ? "1" : "0", err)) return Lock::Error;
+    if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Lock::Error;
+    return Lock::Ok;
 }
 
 bool leave(const std::string& token, std::string* err) {

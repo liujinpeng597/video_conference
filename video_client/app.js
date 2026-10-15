@@ -134,6 +134,7 @@
 
         // 主持人: host 是主持人的 pid (来自服务端); notice 是房间里的临时提示条
         host: '',
+        locked: false,      // 会议锁定 (主持人可切; 锁上后新人进不来)
         notice: '',
         noticeTimer: 0,
 
@@ -539,6 +540,7 @@
       applyRoom(r) {
         if (typeof r.room === 'string') this.room = r.room;
         if (typeof r.host === 'string') this.host = r.host;
+        if (typeof r.locked === 'boolean') this.locked = r.locked;
         if (Array.isArray(r.participants)) {
           this.participants = r.participants;
           const me = r.participants.find((p) => p.me);
@@ -666,6 +668,19 @@
         this.media.mic = false;
         this.publishMic();   // 自己被一键静音也要让名单体现出来
         this.flash('主持人把所有人静音了');
+      },
+      // 会议锁定: 锁上以后新人进不来 (已经在里面的不受影响)
+      async toggleLock() {
+        try {
+          const r = await this.authed('POST', '/api/rooms/lock', { locked: !this.locked });
+          const now = (r && typeof r.locked === 'boolean') ? r.locked : !this.locked;
+          this.locked = now;
+          this.flash(now ? '会议已锁定，新人进不来' : '已解锁，可以进来了');
+          this.scheduleSync(0);
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.flash(err.message || '操作失败');
+        }
       },
       async kickMember(pid) {
         try {

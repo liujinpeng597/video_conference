@@ -617,6 +617,8 @@ Resp apiRoomsEnter(const Request& req) {
             break;
         case presence::Enter::Full:
             return errJson(409, "房间满了");
+        case presence::Enter::Locked:
+            return errJson(403, "会议已锁定，主持人解锁后才能进");
         default:
             return errJson(500, "进房间失败：" + err);
     }
@@ -637,8 +639,9 @@ Resp apiRoomsState(const Request& req) {
     std::vector<presence::Member> members;
     std::vector<presence::Signal> msgs;
     std::string hostPid;
+    bool locked = false;
     std::string err;
-    if (!presence::sync(req.token, since, &room, &members, &msgs, &hostPid, &err)) {
+    if (!presence::sync(req.token, since, &room, &members, &msgs, &hostPid, &locked, &err)) {
         return errJson(500, "同步房间状态失败：" + err);
     }
 
@@ -703,6 +706,7 @@ Resp apiRoomsState(const Request& req) {
     return okJson("{\"room\":" + json::quote(room) +
                   ",\"participants\":" + peersJson(members, req.token) +
                   ",\"host\":" + json::quote(hostPid) +
+                  ",\"locked\":" + (locked ? "true" : "false") +
                   ",\"removed\":" + (removed ? "true" : "false") +
                   ",\"seq\":" + std::to_string(seq) +
                   ",\"messages\":" + arr +
@@ -846,6 +850,28 @@ Resp apiRoomsMic(const Request& req) {
     }
 }
 
+// 会议锁定 / 解锁 (只有主持人能调)。锁上以后新的人进不来, 已经在里面的不受影响。
+Resp apiRoomsLock(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    bool locked = true;
+    if (!json::getBool(req.body, "locked", &locked)) return errJson(400, "请求体里要有 locked (布尔)");
+
+    std::string err;
+    switch (presence::setLocked(req.token, locked, &err)) {
+        case presence::Lock::Ok:
+            return okJson(std::string("{\"ok\":true,\"locked\":") + (locked ? "true}" : "false}"));
+        case presence::Lock::NotHost:
+            return errJson(403, "只有主持人能锁定 / 解锁会议");
+        case presence::Lock::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "锁定失败：" + err);
+    }
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -950,6 +976,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/kick") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsKick(req);
+    }
+    if (req.path == "/api/rooms/lock") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsLock(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

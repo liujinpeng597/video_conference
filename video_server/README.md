@@ -174,12 +174,13 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
 | GET | `/api/me` | - | `{"user"}` |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
-| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `removed`（前端每 0.4-2 秒轮一次） |
+| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `locked` / `removed`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
 | POST | `/api/rooms/mic` | `{"on":bool}` | `{"ok":true,"mic":bool}` |
 | POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
+| POST | `/api/rooms/lock` | `{"locked":bool}` | `{"ok":true,"locked":bool}`；只有主持人能调 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
@@ -210,6 +211,9 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   移出成员（`POST /api/rooms/kick`）走服务端强校验：只有主持人能调。被移出的人**登录还在**，
   只是房间状态被清空，前端据此回大厅 —— 带 `removed` 标记，提示"被主持人移出"，
   不会误报成"服务端重启"。
+- 会议锁定（`POST /api/rooms/lock`，只有主持人能调）：房间 hash 里一个 `@locked` 字段，
+  锁上以后 `enter` 直接拒新人（403），**已经在里面的人不受影响**（心跳走的是另一条路）。
+  主持人自己始终能进（不然锁了就没人能解锁）。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；

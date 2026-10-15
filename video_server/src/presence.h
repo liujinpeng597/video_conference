@@ -60,7 +60,7 @@ bool whereAmI(const std::string& token, Me* me, std::string* err);
 // 这个房间号现在有人吗 (用来避免分配重复的房间号)
 bool roomLive(const std::string& room, bool* out, std::string* err);
 
-enum class Enter { Ok, Full, Error };
+enum class Enter { Ok, Full, Locked, Error };
 
 // 进房间。会清掉上一个房间留下的信令, 不然会去连一个已经不在的人。
 // 成功时 *pid 是新分配的信令地址 (每次进房间都换一个)。
@@ -71,7 +71,7 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 // *hostPid 是主持人的 pid (没有主持人时为空串) —— 主持人 = 建房的人。
 bool sync(const std::string& token, uint64_t since, std::string* room,
           std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
-          std::string* err);
+          bool* locked, std::string* err);
 
 enum class Send { Delivered, NoSuchPeer, NotInRoom, Error };
 
@@ -103,6 +103,10 @@ Mic setMic(const std::string& token, bool on, std::string* err);
 enum class Kick { Ok, NotHost, NoSuchPeer, NotInRoom, Error };
 Kick kick(const std::string& byToken, const std::string& targetPid, std::string* targetToken,
           std::string* err);
+
+// 会议锁定: 锁上以后只有主持人能进 (已经在里面的人不受影响)。
+enum class Lock { Ok, NotHost, NotInRoom, Error };
+Lock setLocked(const std::string& token, bool locked, std::string* err);
 
 bool leave(const std::string& token, std::string* err);
 

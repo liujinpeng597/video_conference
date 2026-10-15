@@ -791,6 +791,23 @@ try {
   if (muted) console.log('全体静音: 主持人一键, 对端被静音');
   else { failed = true; console.error('全体静音断言失败: 对端没被静音'); }
 
+  // 会议锁定: 主持人锁上 -> 对端 state 里 should 看到 locked=true
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; if (!vm.locked) await vm.toggleLock(); return vm.locked; })()`);
+  let lockSeen = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    const v = await evalIn(cdp, pages[1].sessionId, `(${VM})?.locked`);
+    if (v === true) { lockSeen = true; break; }
+    await sleep(400);
+  }
+  if (lockSeen) console.log('会议锁定: 对端看到 locked=true');
+  else { failed = true; console.error('会议锁定断言失败: 对端没看到 locked=true'); }
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; if (vm.locked) await vm.toggleLock(); return vm.locked; })()`);
+
   // 移出成员: 主持人踢掉最后一个标签页, 它下一拍会发现房间空了 + removed 标志, 回大厅
   await activate(cdp, pages[0].sessionId);
   // 明确踢"2 号标签页自己报的 pid" —— 不依赖远端列表的顺序 (hash 顺序不该被假设)

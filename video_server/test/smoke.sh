@@ -720,6 +720,41 @@ check "主持人走后角色交给剩下的人" "$KPID3" "$(jstr host)"
 call POST /api/rooms/leave '{}' "$TOKEN_K3"
 
 echo
+echo "---- 会议锁定 ----"
+# 锁上以后新人进不来 (已经在里面的不受影响); 只有主持人能锁 / 解锁。
+USER_LK="lk$SUF"
+USER_LK2="lkb$SUF"
+call POST /api/register "{\"username\":\"$USER_LK\",\"password\":\"hunter2\"}"
+TOKEN_LK=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_LK2\",\"password\":\"hunter2\"}"
+TOKEN_LK2=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_LK"
+LKROOM=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$LKROOM\"}" "$TOKEN_LK2"
+check "锁定前两个人都能进" "2" "$(jcount name)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_LK"
+check "默认没锁" "0" "$(printf '%s' "$(body)" | grep -o '"locked":true' | wc -l | tr -d ' ')"
+call POST /api/rooms/lock '{"locked":true}' "$TOKEN_LK2"
+check "非主持人锁定 403" "403" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_LK2"
+call POST /api/rooms/lock '{"locked":true}' "$TOKEN_LK"
+check "主持人锁定 200" "200" "$(status)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_LK"
+check "锁定后 state 里 locked:true" "1" "$(printf '%s' "$(body)" | grep -o '"locked":true' | wc -l | tr -d ' ')"
+call POST /api/rooms/enter "{\"room\":\"$LKROOM\"}" "$TOKEN_LK2"
+check "锁上后新人进不来 403" "403" "$(status)"
+call POST /api/rooms/lock '{"locked":false}' "$TOKEN_LK"
+check "主持人解锁 200" "200" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$LKROOM\"}" "$TOKEN_LK2"
+check "解锁后又能进 200" "200" "$(status)"
+call POST /api/rooms/lock '{"locked":true}'
+check "未登录锁定 401" "401" "$(status)"
+call POST /api/rooms/lock '{}' "$TOKEN_LK"
+check "缺 locked 字段 400" "400" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_LK"
+call POST /api/rooms/leave '{}' "$TOKEN_LK2"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"
