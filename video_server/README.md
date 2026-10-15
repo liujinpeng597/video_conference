@@ -172,9 +172,12 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/login` | `{"username","password","remember"?}` | 同上 |
 | POST | `/api/session/resume` | `{"remember_token"}` | `{"token","user"}` |
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
-| GET | `/api/me` | - | `{"user"}` |
+| GET | `/api/me` | - | `{"user","display_name","avatar","avatar_ver"}` |
 | POST | `/api/password` | `{"old_password","new_password"}` | `{"ok":true}`；成功后会吊销其它令牌 |
 | GET | `/api/history?limit=N` | - | `{"visits":[{"room","joined","left","seconds"}]}`（我的会议历史，`left` 为 0 = 进行中） |
+| POST | `/api/profile` | `{"display_name"}` | `{"ok":true}`；房间列表里显示昵称（空 = 用登录名） |
+| POST | `/api/avatar` | `{"data"}`（jpeg/png/webp 的 data URL；空串 = 移除） | `{"ok":true}`；上限 96KB |
+| GET | `/api/avatar?room=&pid=` | - | 头像原图字节；只能取"自己所在房间"里人的头像 |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
 | GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `locked` / `removed`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
@@ -188,7 +191,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 
 - 房间号留空（前端「创建会议」走的就是这条）就自动分配一个 **9 位数字**（首位非 0，如 `483920175`）——
   数字比字母好念好记。前端「加入会议」要求填房间号，不再靠"留空"来区分创建/加入。
-- `participants` 每项是 `{"id","name","me","hand","mic"}`。`id` 是**房间内的信令地址**，随机生成，
+- `participants` 每项是 `{"id","name","me","hand","mic","av"}`。`id` 是**房间内的信令地址**，随机生成，
   不是自增序号（自增的话别人能猜着号给你塞信令）。它只对同一个房间的人可见。
 - `/api/rooms/state` 同时干两件事：刷新心跳 + 取走信令收件箱。合成一个接口是为了让前端
   只用一条轮询循环。`since` 是客户端已经处理到的序号，服务端只把 `<= since` 的消息**过滤掉**
@@ -216,6 +219,11 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 - 会议锁定（`POST /api/rooms/lock`，只有主持人能调）：房间 hash 里一个 `@locked` 字段，
   锁上以后 `enter` 直接拒新人（403），**已经在里面的人不受影响**（心跳走的是另一条路）。
   主持人自己始终能进（不然锁了就没人能解锁）。
+- 昵称 / 头像：房间里显示的 `participants[].name` 是**昵称**（没设就用登录名），登录名只留在
+  服务端；头像存的是 data URL（前端 128×128 压好后传上来），`participants[].av` 是版本号，
+  别人的头像走 `GET /api/avatar?room=&pid=` 取 —— **按 pid 取、并且校验调用者在同一个房间**，
+  这样既能看到头像又不用把登录名下发给房间里的人。头像换新后 `av` 变，URL 跟着变（缓存指纹）；
+  已经在房里的人要重进一次才会看到新头像。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；

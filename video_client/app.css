@@ -682,6 +682,80 @@ button, input { font-family: inherit; }
 .ctl--share-on { border-color: var(--brand); color: var(--brand); }
 .ctl--share-on .icon { color: var(--brand); }
 
+/* ------------------------------------------------- 顶栏导航 / 个人中心 */
+/* 顶栏里的主导航 (会议 / 个人中心)。就两个, 一行放得下, 高度跟着 topbar 的 56px。 */
+.nav { display: flex; gap: 4px; }
+.nav__btn {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.nav__btn:hover { color: var(--brand); background: var(--brand-weak); }
+.nav__btn.on { color: var(--brand); background: var(--brand-weak); font-weight: 600; }
+
+/* 顶栏里的小头像 (没设头像就显示首字母) */
+.who__av {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  border-radius: var(--r-full);
+  background: var(--brand-weak);
+  color: var(--brand);
+  font-size: 12px;
+  overflow: hidden;
+}
+.who__av img { width: 100%; height: 100%; object-fit: cover; }
+
+/* 个人中心: 一列卡片, 居中, 宽度收住 */
+.profile {
+  width: 100%;            /* 显式宽度: 不然 margin-inline:auto 会让它按内容收缩 */
+  max-width: 720px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-content: start;
+}
+.avrow { display: flex; align-items: center; gap: 16px; }
+.avbig {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--r-full);
+  background: var(--brand-weak);
+  color: var(--brand);
+  font-size: 28px;
+  overflow: hidden;
+}
+.avbig img { width: 100%; height: 100%; object-fit: cover; }
+.avrow__act { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.avrow__act .field__hint { flex-basis: 100%; margin: 0; }
+.avfile { display: none; }
+
+/* 视频块里的头像: 名字贴条上的小圆 + 关摄像头时的大圆 */
+.tag__av {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-full);
+  background: rgb(255 255 255 / .22);
+  font-size: 11px;
+  overflow: hidden;
+}
+.tag__av img { width: 100%; height: 100%; object-fit: cover; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--r-full); }
+
 /* ------------------------------------------------------------------ 聊天 */
 /* 面板做成"内容区里的右侧抽屉": 用 top/bottom 让开顶栏和底部控制条,
    所以开着聊天照样能静音 / 共享 / 离开 (盖住控制条会很烦)。

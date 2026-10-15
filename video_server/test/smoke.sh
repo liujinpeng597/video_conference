@@ -742,6 +742,45 @@ call GET /api/history
 check "未登录看历史 401" "401" "$(status)"
 
 echo
+echo "---- 个人资料 (昵称 / 头像) ----"
+USER_PF="pf$SUF"
+call POST /api/register "{\"username\":\"$USER_PF\",\"password\":\"hunter2\"}"
+TOKEN_PF=$(jstr token)
+call GET /api/me '' "$TOKEN_PF"
+contains "默认没有昵称" "$(body)" '"display_name":""'
+contains "默认没有头像" "$(body)" '"avatar":""'
+call POST /api/profile '{"display_name":"  明  "}' "$TOKEN_PF"
+check "存昵称 200" "200" "$(status)"
+call GET /api/me '' "$TOKEN_PF"
+contains "昵称存下来了 (首尾空格去掉)" "$(body)" '"display_name":"明"'
+call POST /api/profile '{"display_name":"a\tb"}' "$TOKEN_PF"
+check "昵称里有控制字符 400" "400" "$(status)"
+
+# 房间里显示的是昵称, 不是登录名
+call POST /api/rooms/enter '{}' "$TOKEN_PF"
+contains "房间里显示的是昵称" "$(body)" '"name":"明"'
+PFROOM=$(jstr room)
+PFPID=$(jpid true)
+
+# 换头像: 一张 1x1 的 png data URL
+AV='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+call POST /api/avatar "{\"data\":\"$AV\"}" "$TOKEN_PF"
+check "存头像 200" "200" "$(status)"
+call GET "/api/avatar?room=$PFROOM&pid=$PFPID" '' "$TOKEN_PF"
+check "同房间的人能取到头像 200" "200" "$(status)"
+call GET "/api/avatar?room=zzz-zzz-zzz&pid=$PFPID" '' "$TOKEN_PF"
+check "别的房间不能取 403" "403" "$(status)"
+call POST /api/avatar '{"data":"not-an-image"}' "$TOKEN_PF"
+check "不是 data URL 的头像 400" "400" "$(status)"
+call POST /api/avatar '{"data":""}' "$TOKEN_PF"
+check "空串 = 移除头像 200" "200" "$(status)"
+call GET /api/me '' "$TOKEN_PF"
+contains "移除后头像空了" "$(body)" '"avatar":""'
+call POST /api/profile '{"display_name":"x"}'
+check "未登录改资料 401" "401" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_PF"
+
+echo
 echo "---- 修改密码 ----"
 USER_PW="pw$SUF"
 call POST /api/register "{\"username\":\"$USER_PW\",\"password\":\"hunter2\"}"

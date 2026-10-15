@@ -61,6 +61,7 @@ std::string join3(const std::string& a, const std::string& b, const std::string&
 // 字段名带 '@' (和 @host 一个路子), 不会撞上十六进制的 token。
 std::string handField(const std::string& token) { return "@hand:" + token; }
 std::string micField(const std::string& token) { return "@mic:" + token; }
+std::string avField(const std::string& token) { return "@av:" + token; }
 
 // 按前 n 个分隔符切开, 剩下的整段作为最后一项 (payload 里可能有任意内容)
 bool splitN(const std::string& s, int n, std::vector<std::string>* out) {
@@ -106,22 +107,29 @@ void applyFlags(const std::vector<redis::Field>& fields, std::vector<Member>* me
     for (Member& m : *members) {
         m.hand = false;
         m.mic = true;
+        m.avatarVer = 0;
     }
     for (const redis::Field& f : fields) {
         const bool on = (f.value == "1");
         bool isHand = false;
+        bool isAv = false;
         std::string tok;
         if (f.name.rfind("@hand:", 0) == 0) {
             tok = f.name.substr(6);
             isHand = true;
         } else if (f.name.rfind("@mic:", 0) == 0) {
             tok = f.name.substr(5);
+        } else if (f.name.rfind("@av:", 0) == 0) {
+            tok = f.name.substr(4);
+            isAv = true;
         } else {
             continue;
         }
         for (Member& m : *members) {
             if (m.token != tok) continue;
-            if (isHand) m.hand = on; else m.mic = on;
+            if (isAv) m.avatarVer = std::strtoll(f.value.c_str(), nullptr, 10);
+            else if (isHand) m.hand = on;
+            else m.mic = on;
             break;
         }
     }
@@ -157,6 +165,7 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     std::string flagErr;
     redis::hDel(roomKey(room), handField(token), &flagErr);
     redis::hDel(roomKey(room), micField(token), &flagErr);
+    redis::hDel(roomKey(room), avField(token), &flagErr);
 
     // 先看现在有谁: 成员列表要返回给前端, 顺便做人数上限检查
     std::vector<redis::Field> fields;
@@ -395,6 +404,31 @@ Hand setHand(const std::string& token, bool raised, std::string* err) {
     return Hand::Ok;
 }
 
+Ava setAvatarVer(const std::string& token, long long ver, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Ava::NotInRoom : Ava::Error;
+    if (!redis::hSet(roomKey(me.room), avField(token), std::to_string(ver), err)) return Ava::Error;
+    if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Ava::Error;
+    return Ava::Ok;
+}
+
+bool tokenByPid(const std::string& room, const std::string& pid, std::string* out, std::string* err) {
+    out->clear();
+    if (room.empty() || pid.empty()) return true;
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(room), &fields, err)) return false;
+    const int64_t now = nowMs();
+    for (const redis::Field& f : fields) {
+        if (!f.name.empty() && f.name[0] == '@') continue;   // @host / @hand: / @mic: / @av: 不是成员
+        const Member m = parseMember(f.name, f.value, now);
+        if (m.live && m.pid == pid) {
+            *out = m.token;
+            break;
+        }
+    }
+    return true;
+}
+
 Mic setMic(const std::string& token, bool on, std::string* err) {
     Me me;
     if (!whereAmI(token, &me, err)) return err->empty() ? Mic::NotInRoom : Mic::Error;
@@ -430,6 +464,7 @@ bool leave(const std::string& token, std::string* err) {
         std::string ignore;
         redis::hDel(roomKey(me.room), handField(token), &ignore);
         redis::hDel(roomKey(me.room), micField(token), &ignore);
+        redis::hDel(roomKey(me.room), avField(token), &ignore);
     }
     if (!redis::del(sessionKey(token), err)) return false;
     if (!redis::del(mailboxKey(token), err)) return false;

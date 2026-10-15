@@ -63,7 +63,8 @@ Route classify(const std::string& path) {
     if (path == "/api/login") return Route::Login;
     if (path == "/api/register") return Route::Register;
     if (path == "/api/me" || path == "/api/logout" || path == "/api/session/resume" ||
-        path == "/api/password" || path == "/api/history")
+        path == "/api/password" || path == "/api/history" || path == "/api/profile" ||
+        path == "/api/avatar")
         return Route::Me;
     if (path == "/api/rooms/state") return Route::State;
     if (path == "/api/rooms/signal") return Route::Signal;

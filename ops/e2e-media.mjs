@@ -182,6 +182,7 @@ function cleanup() {
 }
 
 try {
+  let failed = false;   // 放在最前面: 后面有些阶段 (比如界面切换) 在这之前就可能判失败
   // 从 stderr 里等 "DevTools listening on ws://..."
   const wsUrl = await new Promise((resolve, reject) => {
     let buf = '';
@@ -242,11 +243,11 @@ try {
     );
     await cdp.send('Page.reload', {}, p.sessionId);
     await activate(cdp, p.sessionId);
-    // restoreSession -> goLobby
+    // restoreSession -> goHome
     await waitIn(
       cdp,
       p.sessionId,
-      `(() => { const vm = ${VM}; return !!vm && vm.view === 'lobby'; })()`,
+      `(() => { const vm = ${VM}; return !!vm && vm.view === 'home'; })()`,
       20000,
       `标签页 ${i} 进入大厅`,
       `({ vue: typeof Vue, app: !!document.querySelector('#app'), hasAppKey: !!document.querySelector('#app')?.__vue_app__, hasVnode: !!document.querySelector('#app')?._vnode, vm: !!(${VM}), view: (${VM})?.view, booting: (${VM})?.booting })`,
@@ -254,6 +255,25 @@ try {
   }
 
   // 第 1 个标签页开一个新房间, 读出房间号; 另外两个用同一个房间号进房
+  // 三个界面: 会议首页 / 个人中心 / 会议中 —— 顶栏两个 tab 能来回切, 个人中心有昵称和改密码
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goProfile(); return true; })()`);
+  // 视图切换是 <transition mode="out-in">, 得等新视图真的挂上 (一次 $nextTick 不够)
+  await waitIn(cdp, pages[0].sessionId,
+               `!!document.querySelector('#f-nick') && !!document.querySelector('#f-op')`,
+               10000, '切到个人中心 (昵称 + 修改密码都在)');
+  const tabs = await evalIn(cdp, pages[0].sessionId, `document.querySelectorAll('.nav__btn').length`);
+  if (process.env.E2E_SHOT_PROFILE) {
+    await sleep(400);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_PROFILE, Buffer.from(s.data, 'base64'));
+    console.log(`截图(个人中心): ${process.env.E2E_SHOT_PROFILE}`);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goHome(); return true; })()`);
+  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.preview')`, 10000, '切回会议首页');
+  if (tabs === 2) console.log('三个界面: 个人中心有昵称 + 修改密码, 顶栏两个 tab, 能切回会议页');
+  else { failed = true; console.error(`顶栏 tab 数不对: ${tabs}`); }
+
   // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经 .join 用 margin-inline:auto
   // 变成"按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
   await activate(cdp, pages[0].sessionId);
@@ -300,7 +320,7 @@ try {
        sessionStorage.setItem('tp_user', ${JSON.stringify(u.user)}); 'ok'`);
     await cdp.send('Page.reload', {}, sessionId);
     await activate(cdp, sessionId);
-    await waitIn(cdp, sessionId, `(() => { const vm = ${VM}; return !!vm && vm.view === 'lobby'; })()`,
+    await waitIn(cdp, sessionId, `(() => { const vm = ${VM}; return !!vm && vm.view === 'home'; })()`,
                  20000, '大厅心跳标签页进入大厅');
 
     const relogin = await fetch(`${BASE}/api/login`, {
@@ -436,7 +456,6 @@ try {
   })()`;
 
   let totalOut = 0;
-  let failed = false;
   for (let i = 0; i < pages.length; i++) {
     await activate(cdp, pages[i].sessionId);
     const s = await evalIn(cdp, pages[i].sessionId, statsExpr);
@@ -861,10 +880,10 @@ try {
       pages[2].sessionId,
       `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`,
     );
-    if (kicked.view === 'lobby') break;
+    if (kicked.view === 'home') break;
     await sleep(500);
   }
-  if (kicked && kicked.view === 'lobby' && /移出/.test(kicked.err)) {
+  if (kicked && kicked.view === 'home' && /移出/.test(kicked.err)) {
     console.log(`移出成员: 被踢的人回到大厅 (提示: ${kicked.err})`);
   } else {
     failed = true;

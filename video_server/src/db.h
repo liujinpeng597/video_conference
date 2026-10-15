@@ -68,6 +68,18 @@ struct Visit {
 bool recentVisits(const std::string& username, long long limit, std::vector<Visit>* out,
                   std::string* err);
 
+// 个人资料: 昵称 (房间列表里显示的) + 头像。
+// 头像存的是完整 data URL (data:image/jpeg;base64,...), 前端一份, 后端不解析格式之外的语义。
+struct Profile {
+    std::string username;
+    std::string displayName;  // 空 = 就用 username 显示
+    long long avatarVer = 0;  // 换头像就 +1, 给图片 URL 当缓存指纹
+};
+bool getProfile(const std::string& username, Profile* out, std::string* err);   // 查不到 *err 空
+bool setDisplayName(const std::string& username, const std::string& name, std::string* err);
+bool setAvatar(const std::string& username, const std::string& dataUrl, std::string* err);
+bool getAvatar(const std::string& username, std::string* dataUrl, std::string* err);
+
 // 用户总数。给 /api/health 用, 顺便当"数据库还活着吗"的探针。
 bool countUsers(long long* out, std::string* err);
 

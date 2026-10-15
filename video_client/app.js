@@ -98,6 +98,11 @@
         booting: true,
         pwOpen: false,      // 大厅里"修改密码"表单是否展开
         pw: { old: '', next: '', confirm: '', error: '', done: false },
+        displayName: '',    // 昵称 (房间列表里显示这个)
+        avatarSrc: '',      // 头像 (data URL)
+        nickInput: '',      // 昵称输入框
+        nickSaved: false,
+        profErr: '',
         history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
 
         token: '',
@@ -121,6 +126,7 @@
 
         // 通话质量 (每 2 秒从 getStats 采样一次): pid -> { inKbps, outKbps, lossPct, jitterMs, rttMs, q }
         peerStats: {},
+        avFail: {},         // pid -> 1 (头像加载失败, 退回显示首字母)
         // 聊天: 服务端只留最近 50 条, 客户端内存里最多留 200 条
         chatOpen: false,
         chatMessages: [],   // [{ id, from, name, text }]
@@ -169,6 +175,13 @@
       },
       // 我是不是主持人 (host 是服务端下发的 pid)
       amHost() { return !!this.myPid && this.host === this.myPid; },
+      // 顶栏 / 房间名字显示的名字: 昵称优先, 没设昵称就用登录名
+      whoName() { return this.displayName || this.user; },
+      // 房间里"我"这一格显示的名字 (服务端成员表里就是昵称)
+      myName() {
+        const me = this.participants.find((p) => p.me);
+        return (me && me.name) || this.whoName;
+      },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -328,13 +341,110 @@
       },
 
       // ------------------------------------------------ 登录状态 (两层令牌)
-      goLobby() {
-        this.view = 'lobby';
+      goHome() {
+        this.view = 'home';
         this.startMedia();
         // 大厅不发别的请求, 所以定时确认会话还有效: 被别处登录挤下线的那台会自己回登录页,
         // 而不是一直"看起来还登着", 直到点了什么才发现。
         this.checkSession();
         this.loadHistory();   // 大厅里顺便把"最近会议"拉一份
+        this.loadMe();        // 昵称 / 头像
+      },
+
+      // 个人中心: 进这一屏就把摄像头关掉 (不用一直亮着), 回会议页会自动重开
+      goProfile() {
+        this.view = 'profile';
+        this.nickInput = this.displayName || '';
+        this.nickSaved = false;
+        this.profErr = '';
+        this.stopMedia();
+        this.checkSession();
+        this.loadMe();
+      },
+
+      async loadMe() {
+        try {
+          const r = await this.authed('GET', '/api/me');
+          this.user = r.user || this.user;
+          this.displayName = r.display_name || '';
+          this.avatarSrc = r.avatar || '';
+        } catch (err) {
+          if (err.dead) this.sessionDead();
+        }
+      },
+
+      async saveNickname() {
+        this.profErr = '';
+        this.busy = true;
+        try {
+          await this.authed('POST', '/api/profile', { display_name: this.nickInput });
+          this.displayName = this.nickInput;
+          this.nickSaved = true;
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.profErr = err.message || '保存昵称失败';
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      // 换头像: <input type=file> 选图 -> canvas 压成 128x128 -> data URL -> 发给后端
+      async pickAvatar(ev) {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (!file) return;
+        this.profErr = '';
+        this.busy = true;
+        try {
+          const data = await this.shrinkImage(file);
+          await this.authed('POST', '/api/avatar', { data });
+          this.avatarSrc = data;
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.profErr = err.message || '换头像失败';
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      async removeAvatar() {
+        this.profErr = '';
+        this.busy = true;
+        try {
+          await this.authed('POST', '/api/avatar', { data: '' });
+          this.avatarSrc = '';
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.profErr = err.message || '移除头像失败';
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      // 按 cover 把选中的图压到 128x128 的 jpeg data URL (用 canvas, 不引任何库)
+      shrinkImage(file) {
+        return new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => {
+            URL.revokeObjectURL(url);
+            const size = 128;
+            const c = document.createElement('canvas');
+            c.width = size;
+            c.height = size;
+            const g = c.getContext('2d');
+            const scale = Math.max(size / img.width, size / img.height);
+            const w = img.width * scale;
+            const h = img.height * scale;
+            g.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.85));
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('这张图读不了'));
+          };
+          img.src = url;
+        });
       },
 
       async loadHistory() {
@@ -346,6 +456,14 @@
           this.history = [];   // 读不到就当没有, 不打扰
         }
       },
+      // 房间里别人的头像: 走 /api/avatar (只能取同房间的人, 不泄露登录名); 加载失败就退回首字母
+      avatarUrl(p) {
+        return '/api/avatar?room=' + encodeURIComponent(this.room) +
+               '&pid=' + encodeURIComponent(p.id) + '&v=' + (p.av || 0);
+      },
+      avOk(p) { return (p.av || 0) > 0 && !this.avFail[p.id]; },
+      avFail(pid) { this.avFail[pid] = 1; },
+
       histDur(v) {
         const s = Math.max(0, Math.floor(v.seconds || 0));
         const pad = (n) => String(n).padStart(2, '0');
@@ -364,7 +482,7 @@
 
       checkSession() {
         clearTimeout(this.sessTimer);
-        if (this.view !== 'lobby') return;
+        if (this.view !== 'home') return;
         this.authed('GET', '/api/me').then(() => {
           this.sessTimer = setTimeout(this.checkSession, SESSION_CHECK_MS);
         }).catch((err) => {
@@ -425,7 +543,7 @@
             this.user = r.user;
             sessionStorage.setItem(STORE_USER, r.user);
             this.booting = false;
-            this.goLobby();
+            this.goHome();
             return;
           } catch (err) {
             if (err.status !== 401) {
@@ -439,7 +557,7 @@
 
         if (await this.tryResume()) {
           this.booting = false;
-          this.goLobby();
+          this.goHome();
           return;
         }
         this.booting = false;
@@ -523,7 +641,7 @@
           }
 
           this.form.password = '';
-          this.goLobby();
+          this.goHome();
         } catch (err) {
           this.errors = { form: err.message };
         } finally {
@@ -576,6 +694,7 @@
           this.sigSince = 0;      // 进房间就从头开始收信令
           this.lastHandledSeq = 0;
           this.resetChat();
+          this.avFail = {};       // 头像加载失败的记录, 换房间要清
           this.view = 'room';
           this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
@@ -898,7 +1017,7 @@
         this.sigSince = 0;
         this.lastHandledSeq = 0;
         this.resetChat();
-        this.view = 'lobby';
+        this.view = 'home';
         this.errors = { form: msg };
       },
 
@@ -1177,7 +1296,7 @@
         this.sigSince = 0;
         this.lastHandledSeq = 0;
         this.resetChat();
-        this.view = 'lobby';
+        this.view = 'home';
       },
 
       copyInvite() {

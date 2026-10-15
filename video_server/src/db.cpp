@@ -321,6 +321,50 @@ bool recentVisits(const std::string& username, long long limit, std::vector<Visi
     return true;
 }
 
+bool getProfile(const std::string& username, Profile* out, std::string* err) {
+    err->clear();
+    PGresult* r = query(err, "SELECT username, display_name, avatar_ver FROM users WHERE username = $1",
+                        {username});
+    if (r == nullptr) return false;
+    const bool found = PQntuples(r) == 1;
+    if (found) {
+        out->username = PQgetvalue(r, 0, 0);
+        out->displayName = PQgetvalue(r, 0, 1);
+        out->avatarVer = std::strtoll(PQgetvalue(r, 0, 2), nullptr, 10);
+    }
+    PQclear(r);
+    return found;
+}
+
+bool setDisplayName(const std::string& username, const std::string& name, std::string* err) {
+    err->clear();
+    PGresult* r = query(err, "UPDATE users SET display_name = $2 WHERE username = $1",
+                        {username, name});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool setAvatar(const std::string& username, const std::string& dataUrl, std::string* err) {
+    err->clear();
+    PGresult* r = query(err,
+                        "UPDATE users SET avatar = $2, avatar_ver = avatar_ver + 1 WHERE username = $1",
+                        {username, dataUrl});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool getAvatar(const std::string& username, std::string* dataUrl, std::string* err) {
+    err->clear();
+    dataUrl->clear();
+    PGresult* r = query(err, "SELECT avatar FROM users WHERE username = $1", {username});
+    if (r == nullptr) return false;
+    if (PQntuples(r) == 1 && PQnfields(r) == 1) *dataUrl = PQgetvalue(r, 0, 0);
+    PQclear(r);
+    return true;
+}
+
 bool countUsers(long long* out, std::string* err) {
     err->clear();
     PGresult* r = query(err, "SELECT count(*) FROM users", {});

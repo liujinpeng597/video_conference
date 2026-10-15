@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=16">
+<link rel="stylesheet" href="app.css?v=17">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -103,14 +103,15 @@
     </div>
 
     <!-- ============================== 加入会议 ============================== -->
-    <div v-else-if="view === 'lobby'" key="lobby" class="app">
+    <div v-else-if="view === 'home'" key="home" class="app">
       <header class="topbar">
         <p class="logo"><span class="logo__mark" aria-hidden="true"></span>同频</p>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav__btn" type="button" :class="{ on: view === 'home' }" @click="goHome()">会议</button>
+          <button class="nav__btn" type="button" :class="{ on: view === 'profile' }" @click="goProfile()">个人中心</button>
+        </nav>
         <div class="topbar__right">
-          <span class="who"><svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user"></use></svg>{{ user }}</span>
-          <button class="btn btn--text" type="button" @click="logout">
-            <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-logout"></use></svg>退出登录
-          </button>
+          <span class="who"><span class="who__av"><img v-if="avatarSrc" :src="avatarSrc" alt=""><template v-else>{{ initial(whoName) }}</template></span>{{ whoName }}</span>
         </div>
       </header>
 
@@ -156,33 +157,6 @@
           </div>
 
           <div class="card">
-            <h2 class="card__title">账号</h2>
-            <button class="btn btn--line btn--block" type="button" @click="pwOpen = !pwOpen">
-              {{ pwOpen ? '收起' : '修改密码' }}
-            </button>
-            <form class="form pwform" v-if="pwOpen" novalidate @submit.prevent="changePassword">
-              <div class="field">
-                <label class="field__label" for="f-op">原密码</label>
-                <input id="f-op" class="input" type="password" v-model="pw.old" autocomplete="current-password">
-              </div>
-              <div class="field">
-                <label class="field__label" for="f-np">新密码</label>
-                <input id="f-np" class="input" type="password" v-model="pw.next" autocomplete="new-password">
-                <p class="field__hint">6-64 个字符</p>
-              </div>
-              <div class="field">
-                <label class="field__label" for="f-np2">再输一次新密码</label>
-                <input id="f-np2" class="input" type="password" v-model="pw.confirm" autocomplete="new-password">
-              </div>
-              <p class="formerr" role="alert" v-if="pw.error">
-                <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ pw.error }}
-              </p>
-              <p class="field__hint" v-if="pw.done">密码已改；其它设备已经退出登录。</p>
-              <button class="btn btn--primary btn--block" type="submit" :disabled="busy">确认修改</button>
-            </form>
-          </div>
-
-          <div class="card">
             <h2 class="card__title">设备</h2>
             <div class="devrow">
               <button class="devbtn" type="button" @click="toggleMic"
@@ -220,6 +194,88 @@
       </main>
     </div>
 
+    <!-- ============================== 个人中心 ============================== -->
+    <div v-else-if="view === 'profile'" key="profile" class="app">
+      <header class="topbar">
+        <p class="logo"><span class="logo__mark" aria-hidden="true"></span>同频</p>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav__btn" type="button" :class="{ on: view === 'home' }" @click="goHome()">会议</button>
+          <button class="nav__btn" type="button" :class="{ on: view === 'profile' }" @click="goProfile()">个人中心</button>
+        </nav>
+        <div class="topbar__right">
+          <span class="who"><span class="who__av"><img v-if="avatarSrc" :src="avatarSrc" alt=""><template v-else>{{ initial(whoName) }}</template></span>{{ whoName }}</span>
+        </div>
+      </header>
+
+      <main class="app__body profile">
+        <div class="card">
+          <h2 class="card__title">头像</h2>
+          <div class="avrow">
+            <span class="avbig"><img v-if="avatarSrc" :src="avatarSrc" alt="当前头像"><template v-else>{{ initial(whoName) }}</template></span>
+            <div class="avrow__act">
+              <input ref="avFile" class="avfile" type="file" accept="image/png,image/jpeg,image/webp" @change="pickAvatar">
+              <button class="btn btn--line" type="button" @click="$refs.avFile.click()" :disabled="busy">更换头像</button>
+              <button class="btn btn--text" type="button" v-if="avatarSrc" @click="removeAvatar" :disabled="busy">移除</button>
+              <p class="field__hint">选一张图，浏览器里压成 128×128 再传。</p>
+            </div>
+          </div>
+          <p class="formerr" role="alert" v-if="profErr">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ profErr }}
+          </p>
+        </div>
+
+        <div class="card">
+          <h2 class="card__title">昵称</h2>
+          <form class="form" novalidate @submit.prevent="saveNickname">
+            <div class="field">
+              <label class="field__label" for="f-nick">房间里显示的名字</label>
+              <input id="f-nick" class="input" type="text" v-model.trim="nickInput" maxlength="20"
+                     placeholder="不填就用登录名" @input="nickSaved = false">
+            </div>
+            <p class="field__hint" v-if="nickSaved">昵称已保存，下次进房间生效。</p>
+            <button class="btn btn--primary" type="submit" :disabled="busy">保存昵称</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2 class="card__title">登录名</h2>
+          <p class="field__hint">登录名 <b>{{ user }}</b> 用来登录，不能改。</p>
+        </div>
+
+        <div class="card">
+          <h2 class="card__title">修改密码</h2>
+          <form class="form" novalidate @submit.prevent="changePassword">
+            <div class="field">
+              <label class="field__label" for="f-op">原密码</label>
+              <input id="f-op" class="input" type="password" v-model="pw.old" autocomplete="current-password">
+            </div>
+            <div class="field">
+              <label class="field__label" for="f-np">新密码</label>
+              <input id="f-np" class="input" type="password" v-model="pw.next" autocomplete="new-password">
+              <p class="field__hint">6-64 个字符</p>
+            </div>
+            <div class="field">
+              <label class="field__label" for="f-np2">再输一次新密码</label>
+              <input id="f-np2" class="input" type="password" v-model="pw.confirm" autocomplete="new-password">
+            </div>
+            <p class="formerr" role="alert" v-if="pw.error">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ pw.error }}
+            </p>
+            <p class="field__hint" v-if="pw.done">密码已改；其它设备已经退出登录。</p>
+            <button class="btn btn--primary" type="submit" :disabled="busy">确认修改</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2 class="card__title">退出登录</h2>
+          <p class="field__hint">退出后这台浏览器要重新登录，长期令牌也会一起吊销。</p>
+          <button class="btn btn--line" type="button" @click="logout">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-logout"></use></svg>退出登录
+          </button>
+        </div>
+      </main>
+    </div>
+
     <!-- =============================== 会议中 =============================== -->
     <div v-else key="room" class="app app--room">
       <header class="topbar">
@@ -251,11 +307,11 @@
           <article class="tile" :class="{ 'tile--focus': focusPid === myPid }" @click="toggleFocus(myPid)">
             <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn || sharing"></video>
             <div class="tile__off" v-if="(!camOn || !media.stream) && !sharing">
-              <span class="avatar" aria-hidden="true">{{ initial(user) }}</span>
+              <span class="avatar" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span>
               <p>{{ media.stream ? '摄像头关着' : '没有摄像头画面' }}</p>
             </div>
             <span class="tile__hand" v-if="myHand" title="已举手" aria-label="已举手">✋</span>
-            <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
+            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span><b class="tile__you">你</b>{{ myName }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
           <article class="tile" v-for="p in remotes" :key="p.id"
@@ -263,7 +319,7 @@
             <video :ref="(el) => bindRemoteVideo(el, p.id)" class="tile__video tile__video--remote"
                    autoplay playsinline></video>
             <div class="tile__off" v-if="!peerHasVideo[p.id]">
-              <span class="avatar" aria-hidden="true">{{ initial(p.name) }}</span>
+              <span class="avatar" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="" @error="avFail(p.id)">{{ avOk(p) ? '' : initial(p.name) }}</span>
               <p>{{ peerHint(p.id) }}</p>
             </div>
             <span class="tile__hand" v-if="p.hand" title="已举手" aria-label="已举手">✋</span>
@@ -271,7 +327,7 @@
                     title="移出会议" @click.stop="kickMember(p.id)">
               <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
             </button>
-            <p class="tile__tag">{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
+            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="">{{ avOk(p) ? '' : initial(p.name) }}</span>{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
             <span class="tile__q" :class="peerStats[p.id] ? 'tile__q--' + peerStats[p.id].q : ''"
                   v-if="qText(p.id)" :title="qTitle(p.id)">{{ qText(p.id) }}</span>
           </article>
@@ -473,7 +529,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=16"></script>
-<script src="app.js?v=16"></script>
+<script src="vendor/vue.global.prod.js?v=17"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

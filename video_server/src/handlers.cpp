@@ -15,6 +15,7 @@
 #include "handlers.h"
 
 #include <unistd.h>
+#include <sodium.h>
 
 #include <algorithm>
 #include <chrono>
@@ -102,6 +103,8 @@ std::string peersJson(const std::vector<presence::Member>& members, const std::s
         arr += m.hand ? "true" : "false";
         arr += ",\"mic\":";
         arr += m.mic ? "true" : "false";
+        arr += ",\"av\":";
+        arr += std::to_string(m.avatarVer);
         arr += '}';
     }
     arr += ']';
@@ -251,6 +254,20 @@ long long queryInt(const std::string& query, const char* key, long long def) {
         p = amp + 1;
     }
     return def;
+}
+
+// 取查询串里某个 key 的原值。这里只用来取房间号 / pid (字母数字), 所以不做 URL 解码。
+std::string queryStr(const std::string& query, const char* key) {
+    const std::string k = std::string(key) + "=";
+    size_t p = 0;
+    while (p < query.size()) {
+        const size_t amp = query.find('&', p);
+        const std::string item = query.substr(p, (amp == std::string::npos ? query.size() : amp) - p);
+        if (item.compare(0, k.size(), k) == 0) return item.substr(k.size());
+        if (amp == std::string::npos) break;
+        p = amp + 1;
+    }
+    return std::string();
 }
 
 void sendResp(Connection& c, const Resp& r, bool keepAlive) {
@@ -549,7 +566,16 @@ Resp apiMe(const Request& req) {
     std::string user;
     Resp fail;
     if (!requireAuth(req, &user, &fail)) return fail;
-    return okJson("{\"user\":" + json::quote(user) + "}");
+    // 个人中心要的东西: 登录名 + 昵称 (显示名) + 头像 (data URL, 直接给 <img src> 用)
+    db::Profile p;
+    std::string err;
+    std::string avatar;
+    const bool has = db::getProfile(user, &p, &err);
+    if (has) db::getAvatar(user, &avatar, &err);
+    return okJson("{\"user\":" + json::quote(user) +
+                  ",\"display_name\":" + json::quote(has ? p.displayName : std::string()) +
+                  ",\"avatar\":" + json::quote(avatar) +
+                  ",\"avatar_ver\":" + std::to_string(has ? p.avatarVer : 0) + "}");
 }
 
 // 这台实例的名字 (容器里就是 hostname)。多实例部署时用它确认负载均衡真的在分发。
@@ -606,9 +632,15 @@ Resp apiRoomsEnter(const Request& req) {
         if (raw.empty()) return errJson(503, "分配不到空闲房间号，过会儿再试");
     }
 
+    // 房间里显示的是"昵称" (没设就用登录名); 登录名只留在服务端, 不下发给同房间的人
+    db::Profile prof;
+    std::string profErr;
+    const bool hasProf = db::getProfile(user, &prof, &profErr);
+    const std::string display = (hasProf && !prof.displayName.empty()) ? prof.displayName : user;
+
     std::string pid;
     std::vector<presence::Member> members;
-    switch (presence::enter(req.token, user, raw, &pid, &members, &err)) {
+    switch (presence::enter(req.token, display, raw, &pid, &members, &err)) {
         case presence::Enter::Ok:
             // 会议生命周期事件 -> Kafka (可选, 尽力而为; 见 events.h)。
             // 房间号自动分配 = 这次进房顺带建了个新房间。
@@ -617,6 +649,10 @@ Resp apiRoomsEnter(const Request& req) {
             {   // 会议历史 (room_visits 表): 尽力而为, 失败不影响进房
                 std::string herr;
                 db::recordVisit(user, raw, &herr);
+            }
+            {   // 头像版本进房间成员表, 别人才知道该拉哪一版
+                std::string aerr;
+                presence::setAvatarVer(req.token, hasProf ? prof.avatarVer : 0, &aerr);
             }
             break;
         case presence::Enter::Full:
@@ -927,6 +963,97 @@ Resp apiHistory(const Request& req) {
     return okJson("{\"visits\":" + arr + "}");
 }
 
+// 改昵称 (显示名)。空串 = 清掉, 回到用登录名显示。
+Resp apiProfile(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string name;
+    if (!json::getString(req.body, "display_name", &name)) return errJson(400, "请求体里要有 display_name");
+    const size_t a = name.find_first_not_of(" \t");
+    const size_t b = name.find_last_not_of(" \t");
+    name = (a == std::string::npos) ? std::string() : name.substr(a, b - a + 1);
+    if (name.size() > 60) return errJson(400, "昵称太长 (最多 60 字节)");
+    for (unsigned char c : name) {
+        if (c < 0x20 || c == 0x7f) return errJson(400, "昵称里不能有控制字符");
+    }
+    std::string err;
+    if (!db::setDisplayName(user, name, &err)) return errJson(500, "保存昵称失败：" + err);
+    return okJson("{\"ok\":true}");
+}
+
+// 换头像: 前端把图压到 128x128 再用 canvas 转 data URL 送上来 (整串存在库里)。
+Resp apiAvatarPut(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string data;
+    if (!json::getString(req.body, "data", &data)) return errJson(400, "请求体里要有 data");
+    if (data.empty()) {   // 传空串 = 移除头像
+        std::string err;
+        if (!db::setAvatar(user, std::string(), &err)) return errJson(500, "移除头像失败：" + err);
+        return okJson("{\"ok\":true}");
+    }
+    if (data.size() > 96 * 1024) return errJson(413, "头像太大了");
+    static const char* kPrefix[] = {"data:image/jpeg;base64,", "data:image/png;base64,",
+                                    "data:image/webp;base64,"};
+    bool ok = false;
+    for (const char* p : kPrefix) {
+        if (data.rfind(p, 0) == 0) { ok = true; break; }
+    }
+    if (!ok) return errJson(400, "头像要 jpeg / png / webp 的 data URL");
+    std::string err;
+    if (!db::setAvatar(user, data, &err)) return errJson(500, "保存头像失败：" + err);
+    return okJson("{\"ok\":true}");
+}
+
+// 取头像 (原始图片字节)。只能取"自己当前所在房间"里某个人的: ?room=&pid=
+// 这样既能显示别人的头像, 又不用把用户名下发给房间里的人。
+Resp apiAvatarGet(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    const std::string room = queryStr(req.query, "room");
+    const std::string pid = queryStr(req.query, "pid");
+    presence::Me me;
+    std::string err;
+    if (!presence::whereAmI(req.token, &me, &err)) return errJson(401, "你还没进房间");
+    if (me.room != room) return errJson(403, "只能看同一个房间里的人");
+
+    std::string memberToken;
+    if (!presence::tokenByPid(room, pid, &memberToken, &err)) return errJson(500, "查房间成员失败：" + err);
+    if (memberToken.empty()) return errJson(404, "房间里没有这个人");
+    std::string uname;
+    if (auth::whoAmI(memberToken, &uname, &err) != auth::Check::Ok) return errJson(404, "这个人的会话已经不在了");
+
+    std::string data;
+    if (!db::getAvatar(uname, &data, &err)) return errJson(500, "读头像失败：" + err);
+    static const char* kPrefix[] = {"data:image/jpeg;base64,", "data:image/png;base64,",
+                                    "data:image/webp;base64,"};
+    for (const char* p : kPrefix) {
+        const std::string prefix = p;
+        if (data.rfind(prefix, 0) != 0) continue;
+        const std::string b64 = data.substr(prefix.size());
+        std::string bytes;
+        bytes.resize(b64.size() * 3 / 4 + 4);
+        size_t outLen = 0;
+        if (sodium_base642bin((unsigned char*)&bytes[0], bytes.size(), b64.data(), b64.size(),
+                              nullptr, &outLen, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0) {
+            return errJson(500, "头像数据坏了");
+        }
+        bytes.resize(outLen);
+        Resp r;
+        r.code = 200;
+        r.type = prefix.substr(5, prefix.size() - 13);   // 去掉 "data:" 和 ";base64," -> "image/jpeg"
+        r.body = bytes;
+        return r;
+    }
+    return errJson(404, "这个人没有头像");
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -1015,6 +1142,15 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/history") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");
         return apiHistory(req);
+    }
+    if (req.path == "/api/profile") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiProfile(req);
+    }
+    if (req.path == "/api/avatar") {
+        if (isPost) return apiAvatarPut(req);
+        if (isGet) return apiAvatarGet(req);
+        return errJson(405, "这个接口只支持 GET / POST");
     }
     if (req.path == "/api/rooms/enter") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
