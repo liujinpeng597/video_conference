@@ -321,6 +321,12 @@ try {
       failed = true;
       console.error(`大厅心跳断言失败: ${JSON.stringify({ ok: relogin.ok, bounced })}`);
     }
+    if (process.env.E2E_SHOT_KICKED) {
+      await sleep(600);  // 等视图切换的淡入放完, 不然截到半透明的一帧
+      const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId);
+      writeFileSync(process.env.E2E_SHOT_KICKED, Buffer.from(s.data, 'base64'));
+      console.log(`截图(被顶掉): ${process.env.E2E_SHOT_KICKED}`);
+    }
     await cdp.send('Target.closeTarget', { targetId });
   }
 

@@ -31,7 +31,7 @@
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
   const HEALTH_MS = 5000;      // 服务端没响应时的重试间隔
-  const SESSION_CHECK_MS = 5000;  // 大厅里多久验一次"这个会话还有效吗"
+  const SESSION_CHECK_MS = 2000;  // 大厅里多久验一次"这个会话还有效吗" (要和房间轮询一样快, 被顶掉时才像"立刻")
 
   // -------------------------------------------------------------- 对端连接表
   // 故意放在组件外面, 而且不是响应式的: RTCPeerConnection / MediaStream
