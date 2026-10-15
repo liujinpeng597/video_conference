@@ -30,7 +30,8 @@ struct Member {
     std::string user;
     int64_t seenMs = 0;
     bool live = false;  // seen 还在 TTL 内
-    bool hand = false;  // 举手 (由本人切换, 心跳时保留)
+    bool hand = false;  // 举手 (单人标志, 存房间 hash 的 @hand:<token> 字段)
+    bool mic = true;    // 麦克风开着 (存 @mic:<token>; 默认开)
 };
 
 struct Signal {
@@ -92,6 +93,10 @@ bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>
 // 举手 / 放手。房间成员表里带一个 hand 标志, 心跳时保留 (sync 里单独处理)。
 enum class Hand { Ok, NotInRoom, Error };
 Hand setHand(const std::string& token, bool raised, std::string* err);
+
+// 麦克风开关 (让房间里别人看得见你是不是静音了)
+enum class Mic { Ok, NotInRoom, Error };
+Mic setMic(const std::string& token, bool on, std::string* err);
 
 // 主持人把某个成员移出房间 (踢人)。只有主持人能踢, 只能踢同房间活着的人。
 // *targetToken 回传被踢者的令牌, 调用方要用它清掉会话校验缓存 (见 handlers.cpp 的 kick 处理)。

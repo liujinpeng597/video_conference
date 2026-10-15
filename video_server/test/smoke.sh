@@ -647,6 +647,25 @@ call POST /api/rooms/hand '{"raised":true}'
 check "未登录不能举手 401" "401" "$(status)"
 call POST /api/rooms/hand '{}' "$TOKEN_H1"
 check "缺 raised 字段 400" "400" "$(status)"
+
+# 静音状态同步: 和举手同一套标志 (房间里别人看得见你静音了)
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "默认麦是开着的" "0" "$(printf '%s' "$(body)" | grep -o '"mic":false' | wc -l | tr -d ' ')"
+call POST /api/rooms/mic '{"on":false}' "$TOKEN_H1"
+check "上报静音 200" "200" "$(status)"
+contains "返回 mic:false" "$(body)" '"mic":false'
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "另一方能看见他静音了" "1" "$(printf '%s' "$(body)" | grep -o '"mic":false' | wc -l | tr -d ' ')"
+call POST /api/rooms/mic '{"on":true}' "$TOKEN_H1"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "重新开麦后不再有 mic:false" "0" "$(printf '%s' "$(body)" | grep -o '"mic":false' | wc -l | tr -d ' ')"
+call POST /api/rooms/mic '{"on":false}' "$TOKEN_H3"
+check "不在房间不能上报静音 409" "409" "$(status)"
+call POST /api/rooms/mic '{"on":false}'
+check "未登录不能上报静音 401" "401" "$(status)"
+call POST /api/rooms/mic '{}' "$TOKEN_H1"
+check "缺 on 字段 400" "400" "$(status)"
+
 call POST /api/rooms/leave '{}' "$TOKEN_H1"
 call POST /api/rooms/leave '{}' "$TOKEN_H2"
 

@@ -669,6 +669,24 @@ try {
   if (handOk) console.log('举手: 自己与对端都看到 ✋');
   else { failed = true; console.error('举手断言失败: 对端没看到 hand=true'); }
 
+  // 静音状态同步: tab0 关麦, tab1 的成员列表里应该看到 mic=false
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; if (vm.micOn) vm.toggleMic(); return vm.micOn; })()`);
+  let micSeen = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    const seen = await evalIn(cdp, pages[1].sessionId, `(${VM})?.remotes?.some((p) => p.mic === false)`);
+    if (seen) { micSeen = true; break; }
+    await sleep(400);
+  }
+  if (micSeen) console.log('静音同步: 对端看到 mic=false');
+  else { failed = true; console.error('静音同步断言失败: 对端没看到 mic=false'); }
+  // 还原开麦, 别影响后面"全体静音"那条断言
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; if (!vm.micOn) vm.toggleMic(); return vm.micOn; })()`);
+
   // 阶段 5: 表情反应 —— 瞬时效果, 走信令广播 (kind='reaction')
   await activate(cdp, pages[0].sessionId);
   await evalIn(cdp, pages[0].sessionId, `(${VM}).sendReaction('👍')`);
@@ -721,9 +739,18 @@ try {
 
   // 移出成员: 主持人踢掉最后一个标签页, 它下一拍会发现房间空了 + removed 标志, 回大厅
   await activate(cdp, pages[0].sessionId);
-  const remoteIds = await evalIn(cdp, pages[0].sessionId, `(${VM}).remotes.map((p) => p.id)`);
-  const victim = remoteIds[remoteIds.length - 1];
-  await evalIn(cdp, pages[0].sessionId, `(${VM}).kickMember(${JSON.stringify(victim)})`);
+  // 明确踢"2 号标签页自己报的 pid" —— 不依赖远端列表的顺序 (hash 顺序不该被假设)
+  await activate(cdp, pages[2].sessionId);
+  const victim = await evalIn(cdp, pages[2].sessionId, `(${VM})?.myPid`);
+  await activate(cdp, pages[0].sessionId);
+  const inList = await evalIn(cdp, pages[0].sessionId,
+    `(${VM}).remotes.some((p) => p.id === ${JSON.stringify(victim)})`);
+  if (!victim || !inList) {
+    failed = true;
+    console.error(`移出成员: 拿不到 2 号的 pid 或不在名单里 (${victim})`);
+  } else {
+    await evalIn(cdp, pages[0].sessionId, `(${VM}).kickMember(${JSON.stringify(victim)})`);
+  }
   let kicked = null;
   for (let i = 0; i < 20; i++) {
     await activate(cdp, pages[2].sessionId);

@@ -100,6 +100,8 @@ std::string peersJson(const std::vector<presence::Member>& members, const std::s
         arr += (m.token == selfToken) ? "true" : "false";
         arr += ",\"hand\":";
         arr += m.hand ? "true" : "false";
+        arr += ",\"mic\":";
+        arr += m.mic ? "true" : "false";
         arr += '}';
     }
     arr += ']';
@@ -824,6 +826,26 @@ Resp apiRoomsKick(const Request& req) {
     return okJson("{\"ok\":true}");
 }
 
+// 麦克风开关上报: 让房间里别人看得见你是不是静音了 (状态进房间成员表, 从 participants[].mic 读)。
+Resp apiRoomsMic(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    bool on = true;
+    if (!json::getBool(req.body, "on", &on)) return errJson(400, "请求体里要有 on (布尔)");
+
+    std::string err;
+    switch (presence::setMic(req.token, on, &err)) {
+        case presence::Mic::Ok:
+            return okJson(std::string("{\"ok\":true,\"mic\":") + (on ? "true}" : "false}"));
+        case presence::Mic::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "上报麦克风状态失败：" + err);
+    }
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -920,6 +942,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/hand") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsHand(req);
+    }
+    if (req.path == "/api/rooms/mic") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsMic(req);
     }
     if (req.path == "/api/rooms/kick") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");

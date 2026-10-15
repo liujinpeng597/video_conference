@@ -174,17 +174,18 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/logout` | `{"remember_token"?}` | `{"ok":true}` |
 | GET | `/api/me` | - | `{"user"}` |
 | POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
-| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表 + 信令收件箱 + 房间聊天 + `host` / `removed`（前端每 0.4-2 秒轮一次） |
+| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `removed`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
+| POST | `/api/rooms/mic` | `{"on":bool}` | `{"ok":true,"mic":bool}` |
 | POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
 - 房间号留空（前端「创建会议」走的就是这条）就自动分配一个 **9 位数字**（首位非 0，如 `483920175`）——
   数字比字母好念好记。前端「加入会议」要求填房间号，不再靠"留空"来区分创建/加入。
-- `participants` 每项是 `{"id","name","me","hand"}`。`id` 是**房间内的信令地址**，随机生成，
+- `participants` 每项是 `{"id","name","me","hand","mic"}`。`id` 是**房间内的信令地址**，随机生成，
   不是自增序号（自增的话别人能猜着号给你塞信令）。它只对同一个房间的人可见。
 - `/api/rooms/state` 同时干两件事：刷新心跳 + 取走信令收件箱。合成一个接口是为了让前端
   只用一条轮询循环。`since` 是客户端已经处理到的序号，服务端只把 `<= since` 的消息**过滤掉**
@@ -196,9 +197,10 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   已收到的最大消息 id），所以不额外发请求。消息存 Redis 列表（只留最近 50 条、10 分钟 TTL），
   序号在房间内单调递增，游标语义和信令收件箱一致；房间空了再进新人会先清掉旧历史。
   服务端只校验文本（非空、≤500 字节、无控制字符），前端用 `{{ }}` 转义渲染，不做 HTML 注入。
-- 举手：状态挂在房间成员表里（`participants[].hand`），`POST /api/rooms/hand` 切换。
-  成员值现在是 `pid\x1fuser\x1fseen\x1fhand` 四段；心跳（每次 `sync` 重写成员那一格）会**先读后写**
-  保住 `hand`，否则别人一举手就会被你下一拍心跳冲掉。
+- 举手 / 静音：状态挂在房间成员表上（`participants[].hand` / `participants[].mic`），分别用
+  `POST /api/rooms/hand` / `POST /api/rooms/mic` 切换。实现上它们是**房间 hash 里单独的标志字段**
+  （`@hand:<token>` / `@mic:<token>`，默认 = 没举手 / 麦开着），**不塞进成员值** ——
+  成员值每次心跳都会被整个重写，塞进去就得"先读后写"才保得住，容易漏。
 - 表情反应：**没有服务端存储**。它是瞬时效果，前端直接用一个信令广播（`kind="reaction"`，
   `payload={"emoji":…}`）发给同房间所有人，各端本地浮一下；`kind` 本来就是自由字符串。
 - 主持人 = **建房的人**（房间 hash 里一个特殊字段存 host token，跟着房间 TTL 一起过期；
@@ -382,6 +384,7 @@ bash test/smoke.sh # 全链路 (需要能连的 PostgreSQL 和 Redis, 见文件�
 `smoke.sh` 覆盖：编译、单测（json / TURN 凭证）、注册/登录/会话（含失败锁定）、
 ICE/TURN 临时凭证签发、保持登录与续期、令牌吊销、
 **一次登录只留一个会话（换设备 / 换标签页会把旧会话立刻挤下线）**、
+举手 / 静音状态同步（含"心跳不冲掉标志"）、
 房间进出与人数、房间号规整、信令搬运与权限（同房间校验、payload 原样透传、
 序号去重、超长拒绝、并发顺序原子化）、路由与错误码、静态资源与路径穿越、大文件整包送达、
 **多实例互通（两个独立进程共享 Redis：互相看得到房间、信令双向可达、人数上限跨实例生效）**、

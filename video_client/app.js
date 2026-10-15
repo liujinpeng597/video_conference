@@ -491,6 +491,7 @@
           this.scheduleSync(0);
           this.clockTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
           this.syncCalls();
+          this.publishMic();   // 把"我现在是开麦还是静音"报给服务端, 名单里才准
         } catch (err) {
           if (err.dead) {
             this.sessionDead('登录状态已失效，重新登录一下');
@@ -640,6 +641,7 @@
         const track = this.media.stream && this.media.stream.getAudioTracks()[0];
         if (track) track.enabled = false;
         this.media.mic = false;
+        this.publishMic();   // 自己被一键静音也要让名单体现出来
         this.flash('主持人把所有人静音了');
       },
       async kickMember(pid) {
@@ -1118,6 +1120,15 @@
         if (!track) return;
         track.enabled = !track.enabled;
         this.media.mic = track.enabled;
+        this.publishMic();   // 让房间里别人也看得见我静音了
+      },
+
+      // 把当前麦克风开关同步到服务端 (进房后 / 每次切换后)
+      publishMic() {
+        if (this.view !== 'room') return;
+        this.authed('POST', '/api/rooms/mic', { on: this.media.mic }).then(() => {
+          this.scheduleSync(0);
+        }).catch(() => { /* 下一拍同步会以服务端状态为准 */ });
       },
 
       toggleCam() {
