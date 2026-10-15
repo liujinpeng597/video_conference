@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=4">
+<link rel="stylesheet" href="app.css?v=5">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -118,12 +118,12 @@
         <div class="join__side">
           <div class="card">
             <h2 class="card__title">加入会议</h2>
-            <form class="form" novalidate @submit.prevent="enterRoom">
+            <form class="form" novalidate @submit.prevent="joinRoom">
               <div class="field">
                 <label class="field__label" for="f-room">房间号</label>
                 <input id="f-room" class="input input--room" type="text" v-model.trim="roomInput"
-                       spellcheck="false" autocapitalize="off" placeholder="留空就新建一个">
-                <p class="field__hint">别人给了房间号就填上；想自己开一个就留空。</p>
+                       spellcheck="false" autocapitalize="off" inputmode="numeric" placeholder="输入别人给你的房间号">
+                <p class="field__hint">别人把房间号（或邀请链接）给你，填这里进去。</p>
               </div>
 
               <p class="formerr" role="alert" v-if="errors.form">
@@ -134,6 +134,14 @@
                 {{ busy ? '正在进入' : '加入会议' }}
               </button>
             </form>
+          </div>
+
+          <div class="card">
+            <h2 class="card__title">创建会议</h2>
+            <p class="field__hint">开一个新会议，系统分配一个房间号；把邀请链接发给别人就能进来。</p>
+            <button class="btn btn--line btn--block btn--lg" type="button" @click="createRoom" :disabled="busy">
+              {{ busy ? '正在创建' : '创建会议' }}
+            </button>
           </div>
 
           <div class="card">
@@ -408,7 +416,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=4"></script>
-<script src="app.js?v=4"></script>
+<script src="vendor/vue.global.prod.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

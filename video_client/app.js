@@ -431,11 +431,26 @@
         if (m) this.roomInput = m[1].toLowerCase();
       },
 
-      async enterRoom() {
+      // 加入别人的会议 (必须填房间号)
+      async joinRoom() {
+        const code = this.roomInput.trim();
+        if (!code) {
+          this.errors = { form: '要加入别人的会议请先填房间号；想开新会议就点下面的「创建会议」。' };
+          return;
+        }
+        await this.enterRoom(code);
+      },
+
+      // 创建新会议: 不带房间号, 服务端分配一个
+      async createRoom() {
+        await this.enterRoom('');
+      },
+
+      async enterRoom(code) {
         this.errors = {};
         this.busy = true;
         try {
-          const r = await this.authed('POST', '/api/rooms/enter', { room: this.roomInput });
+          const r = await this.authed('POST', '/api/rooms/enter', { room: code });
           this.applyRoom(r);
           await this.loadIce();
           this.joinedAt = Date.now();

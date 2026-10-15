@@ -253,11 +253,18 @@ try {
   }
 
   // 第 1 个标签页开一个新房间, 读出房间号; 另外两个用同一个房间号进房
+  if (process.env.E2E_SHOT_LOBBY) {
+    await activate(cdp, pages[0].sessionId);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_LOBBY, Buffer.from(s.data, 'base64'));
+    console.log(`截图(大厅): ${process.env.E2E_SHOT_LOBBY}`);
+  }
+
   const enter = (room) =>
     `(async () => {
        const vm = ${VM};
        vm.roomInput = ${JSON.stringify(room)};
-       await vm.enterRoom();
+       await (${JSON.stringify(room)} ? vm.joinRoom() : vm.createRoom());
        return vm.room;
      })()`;
   await activate(cdp, pages[0].sessionId);

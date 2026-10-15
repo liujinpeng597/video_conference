@@ -68,13 +68,13 @@ long long g_turnTtl = 12 * 60 * 60;  // 临时凭证有效期, 默认 12 小时
 std::string g_instance = "?";
 
 std::string randomRoomCode() {
-    // 去掉 i / l / o, 房间号是要靠嘴念给别人的
-    static const char kAlpha[] = "abcdefghjkmnpqrstuvwxyz";
+    // 9 位数字房间号 (首位非 0)。数字比字母好念、好记, 也不会有 i/l/o 听不清的问题;
+    // 首位从 1-9 起, 免得前导 0 被人写漏或念掉。9 位 = 9 亿种, 加上进房时的占用检查,
+    // 撞号概率可以忽略。
     std::string s;
-    for (int g = 0; g < 3; ++g) {
-        if (g) s.push_back('-');
-        for (int i = 0; i < 3; ++i) s.push_back(kAlpha[rnd::below(23)]);
-    }
+    s.reserve(9);
+    s.push_back((char)('1' + rnd::below(9)));
+    for (int i = 1; i < 9; ++i) s.push_back((char)('0' + rnd::below(10)));
     return s;
 }
 

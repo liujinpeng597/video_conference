@@ -333,7 +333,7 @@ echo "---- 房间 ----"
 call POST /api/rooms/enter '{}' "$TOKEN_A"
 check "进房间 200" "200" "$(status)"
 ROOM=$(jstr room)
-check "空房间号时自动分配" "1" "$(printf '%s' "$ROOM" | grep -c '^[a-z]\{3\}-[a-z]\{3\}-[a-z]\{3\}$')"
+check "空房间号时自动分配 (9 位数字, 首位非 0)" "1" "$(printf '%s' "$ROOM" | grep -c '^[1-9][0-9]\{8\}$')"
 check "房间里 1 个人" "1" "$(jcount name)"
 
 call POST /api/register "{\"username\":\"$USER_B\",\"password\":\"hunter2\"}"
