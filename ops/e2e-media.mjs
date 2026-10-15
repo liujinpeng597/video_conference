@@ -611,6 +611,37 @@ try {
     }
   }
 
+  // 阶段 2.5: 虚拟背景(简易人像) —— 出向视频轨应该换成 canvas 处理后的流: 连接不断、对端继续收
+  await activate(cdp, pages[0].sessionId);
+  const bgMode = await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; await vm.setBg('blur'); return vm.bgMode; })()`);
+  await sleep(2500);
+  const bgIn = [];
+  for (let i = 0; i < pages.length; i++) {
+    await activate(cdp, pages[i].sessionId);
+    bgIn.push(await evalIn(cdp, pages[i].sessionId, statsExpr));
+  }
+  await activate(cdp, pages[1].sessionId);
+  const bgStates = await evalIn(cdp, pages[1].sessionId,
+    `[...window.tongpin.calls.values()].map((s) => s.pc.connectionState)`);
+  const bgOk = bgMode === 'blur' && bgStates.length === 2 && bgStates.every((s) => s === 'connected') &&
+               bgIn[0].outBytes > 0 && bgIn[1].inBytes > 0 && bgIn[2].inBytes > 0;
+  if (bgOk) {
+    console.log(`虚拟背景: 出向轨换成处理后的流, 连接保持 (tab0 发 ${bgIn[0].outBytes} 字节, 对端在收)`);
+  } else {
+    failed = true;
+    console.error(`虚拟背景断言失败: ${JSON.stringify({ bgMode, bgStates, flow: bgIn.map((s) => `${s.inBytes}/${s.outBytes}`) })}`);
+  }
+  await activate(cdp, pages[0].sessionId);
+  if (process.env.E2E_SHOT_BG) {
+    await activate(cdp, pages[1].sessionId);   // 拍"别人看到的"那一路
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[1].sessionId);
+    writeFileSync(process.env.E2E_SHOT_BG, Buffer.from(s.data, 'base64'));
+    console.log(`截图(虚拟背景): ${process.env.E2E_SHOT_BG}`);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).stopBg(); return true; })()`);
+  await sleep(600);
+
   // 阶段 3: 房间聊天 —— 写走 POST /api/rooms/chat, 读搭 /api/rooms/state 的 chat 字段同一拍带回。
   // 断言: tab0 发出的是自己那条; tab1 收到; tab1 面板关着时未读 +1;
   // 而且用户文本按纯文本渲染 (HTML 被转义) —— 聊天是最脏的用户输入, 这条最重要。

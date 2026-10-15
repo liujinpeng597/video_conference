@@ -45,6 +45,11 @@
   const statsPrev = new Map();     // pid -> 上一次 getStats 的累计值 (算码率/丢包率要用增量)
   // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
   let shareStream = null;          // 正在共享的 getDisplayMedia 流
+  // 虚拟背景(简易人像模式)的处理链路: 摄像头 -> 隐藏 video -> canvas -> captureStream
+  let bgStream = null;             // canvas.captureStream() 出来的流 (出向视频轨换它)
+  let bgCanvas = null;
+  let bgVideo = null;
+  let bgRAF = 0;
   let wakeLock = null;             // 屏幕常亮锁 (手机端尽量别锁屏)
 
   // 静态资源和 API 都由 video_server 提供, 所以是同一个源, 路径直接写相对根
@@ -134,6 +139,7 @@
 
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
+        bgMode: 'off',              // 虚拟背景(简易人像): 'off' | 'blur' | 'solid'
         copied: false,
         videoEl: null,
         syncTimer: 0,
@@ -212,7 +218,19 @@
         // 只在"真的换了流"时才赋值: srcObject 一赋值就会触发 <video> 的加载算法
         // (emptied -> loadstart -> loadeddata), 画面会黑一下再回来。这个函数 ref 在每次
         // 重渲染时都会被调用 (计时器每秒一次 + 每拍轮询), 不加这个判断就是每秒闪一下。
-        if (el && el.srcObject !== this.media.stream) el.srcObject = this.media.stream;
+        if (!el) return;
+        const want = this.localSource();
+        if (el.srcObject !== want) el.srcObject = want;
+      },
+
+      // 本地预览该显示哪一路: 共享屏幕 > 虚拟背景 > 摄像头
+      localSource() {
+        if (this.sharing && shareStream) return shareStream;
+        if (this.bgMode !== 'off' && bgStream) return bgStream;
+        return this.media.stream;
+      },
+      syncPreview() {
+        if (this.videoEl) this.videoEl.srcObject = this.localSource();
       },
 
       // 远端画面同理, 但要按 pid 分开管
@@ -774,6 +792,7 @@
       droppedOut(msg) {
         this.stopTimers();
         this.stopShare();
+        this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();
         this.room = '';
@@ -1051,6 +1070,7 @@
       async leave() {
         this.stopTimers();
         this.stopShare();
+        this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();
         try { await this.authed('POST', '/api/rooms/leave', {}); } catch (err) { /* 忽略 */ }
@@ -1081,7 +1101,7 @@
         if (this.media.stream) {
           // 轨道都活着: 只是切视图回来, 重新绑一下预览就行
           if (this.media.stream.getTracks().every((t) => t.readyState === 'live')) {
-            if (this.videoEl) this.videoEl.srcObject = this.media.stream;
+            this.syncPreview();
             return;
           }
           // 有轨道已经死了 (设备被拔掉): 走和插拔事件同一条修复路径
@@ -1160,7 +1180,7 @@
         this.media.stream = stream;
         this.media.cam = stream.getVideoTracks().length > 0;
         this.media.mic = stream.getAudioTracks().length > 0;
-        if (this.videoEl) this.videoEl.srcObject = stream;
+        this.syncPreview();
 
         // 如果授权弹窗比"加入会议"慢 (用户在大厅停留很久), 进房间时还没有轨道,
         // 那时建的是 recvonly 的连接。这里把轨道补上, addTrack 会自动触发重新协商。
@@ -1172,11 +1192,12 @@
       },
 
       stopMedia() {
+        this.stopBg();       // 处理链路的源(摄像头)要没了, 先拆掉
         if (this.media.stream) {
           this.media.stream.getTracks().forEach((t) => t.stop());
           this.media.stream = null;
         }
-        if (this.videoEl) this.videoEl.srcObject = null;
+        this.syncPreview();
         this.media.cam = true;
         this.media.mic = true;
       },
@@ -1210,6 +1231,7 @@
       // 从"纯接收"模式 (当初就没有摄像头) 建立的对端只能 addTrack, 那一次会重新协商 ——
       // 正是 perfect negotiation 覆盖的场景。浏览器共享条里的"停止共享"通过 track ended 回调处理。
       async toggleShare() {
+        if (this.bgMode !== 'off') this.stopBg();   // 两者都要占用出向视频轨, 不并存
         if (this.sharing) { this.stopShare(); return; }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
           console.warn('这个浏览器不支持屏幕共享 (getDisplayMedia)');
@@ -1242,7 +1264,7 @@
             }
           }
         }
-        if (this.videoEl) this.videoEl.srcObject = shareStream;  // 本地预览切到屏幕
+        this.syncPreview();   // 本地预览切到屏幕
       },
 
       stopShare() {
@@ -1265,7 +1287,91 @@
           shareStream.getTracks().forEach((t) => t.stop());
           shareStream = null;
         }
-        if (this.videoEl) this.videoEl.srcObject = this.media.stream;
+        this.syncPreview();
+      },
+
+      // ------------------------------------------------------- 虚拟背景
+      // 老实说: 这是"简易人像模式" —— 画面中心一块椭圆里的人像保持清晰, 四周模糊或填纯色。
+      // 没做 AI 抠像 (真实分割要引分割模型, 和"离线可跑、不加外部依赖"的前提冲突; 要做就得
+      // 把模型 vendor 进仓库)。但链路是真的: 摄像头 -> 隐藏 <video> -> canvas 处理 ->
+      // captureStream -> 给每条连接 replaceTrack 换出向视频轨, 所以对端看到的确实是处理后的画面。
+      cycleBg() {
+        const next = this.bgMode === 'off' ? 'blur' : (this.bgMode === 'blur' ? 'solid' : 'off');
+        this.setBg(next);
+      },
+      async setBg(mode) {
+        this.stopBg();
+        this.bgMode = mode;
+        if (mode === 'off') return;
+        const camTrack = this.media.stream && this.media.stream.getVideoTracks()[0];
+        if (!camTrack) { this.bgMode = 'off'; this.flash('先打开摄像头再用虚拟背景'); return; }
+        if (this.sharing) { this.bgMode = 'off'; this.flash('共享屏幕时不能开虚拟背景'); return; }
+
+        bgVideo = document.createElement('video');
+        bgVideo.muted = true;
+        bgVideo.playsInline = true;
+        bgVideo.srcObject = new MediaStream([camTrack]);
+        await bgVideo.play().catch(() => {});
+        bgCanvas = document.createElement('canvas');
+        bgCanvas.width = 640;
+        bgCanvas.height = 360;
+        const ctx = bgCanvas.getContext('2d');
+        const draw = () => {
+          if (!bgCanvas || !bgVideo) return;
+          const w = bgCanvas.width, h = bgCanvas.height;
+          ctx.filter = 'none';
+          if (mode === 'solid') {
+            ctx.fillStyle = '#2b3a55';
+            ctx.fillRect(0, 0, w, h);
+          } else {
+            ctx.filter = 'blur(12px) brightness(.7)';
+            ctx.drawImage(bgVideo, -24, -14, w + 48, h + 28);   // 画大一圈, 免得边上露出模糊边
+            ctx.filter = 'none';
+          }
+          ctx.save();
+          ctx.beginPath();
+          ctx.ellipse(w * 0.5, h * 0.54, w * 0.26, h * 0.46, 0, 0, Math.PI * 2);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(bgVideo, 0, 0, w, h);
+          ctx.restore();
+          bgRAF = requestAnimationFrame(draw);
+        };
+        draw();
+        bgStream = bgCanvas.captureStream(24);
+        const track = bgStream.getVideoTracks()[0];
+        for (const state of calls.values()) {
+          const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            try { await sender.replaceTrack(track); } catch (err) { /* 连接可能正在重建, 交给看门狗 */ }
+          } else {
+            try { state.pc.addTrack(track, bgStream); state.bgAdded = true; } catch (err) { /* 忽略 */ }
+          }
+        }
+        this.syncPreview();
+      },
+      stopBg() {
+        if (bgRAF) { cancelAnimationFrame(bgRAF); bgRAF = 0; }
+        const camTrack = this.media.stream ? this.media.stream.getVideoTracks()[0] : null;
+        for (const state of calls.values()) {
+          if (state.bgAdded) {
+            state.bgAdded = false;
+            const t = bgStream ? bgStream.getVideoTracks()[0] : null;
+            const sender = t ? state.pc.getSenders().find((s) => s.track === t) : null;
+            if (sender) { try { state.pc.removeTrack(sender); } catch (err) { /* 忽略 */ } }
+          } else {
+            const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+            if (sender) sender.replaceTrack(camTrack || null).catch(() => {});
+          }
+        }
+        if (bgStream) {
+          bgStream.getTracks().forEach((t) => t.stop());
+          bgStream = null;
+        }
+        bgCanvas = null;
+        bgVideo = null;
+        this.bgMode = 'off';
+        this.syncPreview();
       },
 
       // ------------------------------------------------------------- 防锁屏
