@@ -169,11 +169,12 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表 + 我的信令收件箱 + 房间聊天（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
+| POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
 - 房间号留空就自动分配一个 `xxx-xxx-xxx`（小写字母，去掉 `i/l/o`，因为要靠嘴念）。
-- `participants` 每项是 `{"id","name","me"}`。`id` 是**房间内的信令地址**，随机生成，
+- `participants` 每项是 `{"id","name","me","hand"}`。`id` 是**房间内的信令地址**，随机生成，
   不是自增序号（自增的话别人能猜着号给你塞信令）。它只对同一个房间的人可见。
 - `/api/rooms/state` 同时干两件事：刷新心跳 + 取走信令收件箱。合成一个接口是为了让前端
   只用一条轮询循环。`since` 是客户端已经处理到的序号，服务端只把 `<= since` 的消息**过滤掉**
@@ -185,6 +186,11 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   已收到的最大消息 id），所以不额外发请求。消息存 Redis 列表（只留最近 50 条、10 分钟 TTL），
   序号在房间内单调递增，游标语义和信令收件箱一致；房间空了再进新人会先清掉旧历史。
   服务端只校验文本（非空、≤500 字节、无控制字符），前端用 `{{ }}` 转义渲染，不做 HTML 注入。
+- 举手：状态挂在房间成员表里（`participants[].hand`），`POST /api/rooms/hand` 切换。
+  成员值现在是 `pid\x1fuser\x1fseen\x1fhand` 四段；心跳（每次 `sync` 重写成员那一格）会**先读后写**
+  保住 `hand`，否则别人一举手就会被你下一拍心跳冲掉。
+- 表情反应：**没有服务端存储**。它是瞬时效果，前端直接用一个信令广播（`kind="reaction"`，
+  `payload={"emoji":…}`）发给同房间所有人，各端本地浮一下；`kind` 本来就是自由字符串。
 - 退出登录会把长期令牌一起吊销（退出 = 忘掉我）。
 - 出错统一返回 `{"error":"中文说明"}`，前端直接显示这句话。
 - 校验：用户名 3-20、密码 6-64 个字符（按码点算，必须是合法 UTF-8）；

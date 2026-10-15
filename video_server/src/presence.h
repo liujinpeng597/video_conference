@@ -30,6 +30,7 @@ struct Member {
     std::string user;
     int64_t seenMs = 0;
     bool live = false;  // seen 还在 TTL 内
+    bool hand = false;  // 举手 (由本人切换, 心跳时保留)
 };
 
 struct Signal {
@@ -85,6 +86,10 @@ Chat postChat(const std::string& token, const std::string& text, ChatMessage* ou
 // 取房间里 id > since 的消息。room 为空 (不在房间) 时返回空列表。
 bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>* out,
                std::string* err);
+
+// 举手 / 放手。房间成员表里带一个 hand 标志, 心跳时保留 (sync 里单独处理)。
+enum class Hand { Ok, NotInRoom, Error };
+Hand setHand(const std::string& token, bool raised, std::string* err);
 
 bool leave(const std::string& token, std::string* err);
 

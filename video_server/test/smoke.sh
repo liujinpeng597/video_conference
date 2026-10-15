@@ -375,7 +375,7 @@ echo
 echo "---- 信令 (WebRTC 协商消息的搬运) ----"
 # 从 participants 里挑出自己和别人的 pid。服务端输出的顺序不保证, 所以按 me 标记找。
 jpid() { # true|false
-    body | grep -o "{\"id\":\"[^\"]*\",\"name\":\"[^\"]*\",\"me\":$1}" |
+    body | grep -o "{\"id\":\"[^\"]*\",\"name\":\"[^\"]*\",\"me\":$1," |
         sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1
 }
 
@@ -581,6 +581,54 @@ call POST /api/rooms/enter "{\"room\":\"$CROOM\"}" "$TOKEN_CX"
 call GET "/api/rooms/state?since=0&chat=0" '' "$TOKEN_CX"
 check "号码复用时聊天历史被清掉" "0" "$(jcount text)"
 call POST /api/rooms/leave '{}' "$TOKEN_CX"
+
+echo
+echo "---- 举手 ----"
+# 举手标志挂在房间成员表里, 别人从 participants[].hand 读到。关键断言: 心跳 (每次 sync 都会
+# 重写成员那一格) 不能把举手标志冲掉 —— 这正是实现时最容易写错的地方。
+USER_H1="hand$SUF"
+USER_H2="handb$SUF"
+USER_H3="handx$SUF"
+call POST /api/register "{\"username\":\"$USER_H1\",\"password\":\"hunter2\"}"
+TOKEN_H1=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_H2\",\"password\":\"hunter2\"}"
+TOKEN_H2=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_H1"
+HROOM=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$HROOM\"}" "$TOKEN_H2"
+check "两个账号进了同一个房间" "2" "$(jcount name)"
+
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "默认没人举手" "0" "$(printf '%s' "$(body)" | grep -o '"hand":true' | wc -l | tr -d ' ')"
+
+call POST /api/rooms/hand '{"raised":true}' "$TOKEN_H1"
+check "举手 200" "200" "$(status)"
+contains "返回 hand:true" "$(body)" '"hand":true'
+
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "另一方能看见他举手了" "1" "$(printf '%s' "$(body)" | grep -o '"hand":true' | wc -l | tr -d ' ')"
+
+# H1 自己再同步两次 (每次都会重写自己那一格): 举手标志必须还在
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H1"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H1"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "本人心跳后举手标志还在 (没被心跳冲掉)" "1" "$(printf '%s' "$(body)" | grep -o '"hand":true' | wc -l | tr -d ' ')"
+
+call POST /api/rooms/hand '{"raised":false}' "$TOKEN_H1"
+check "放手 200" "200" "$(status)"
+call GET "/api/rooms/state?since=0" '' "$TOKEN_H2"
+check "放手后不再有 hand:true" "0" "$(printf '%s' "$(body)" | grep -o '"hand":true' | wc -l | tr -d ' ')"
+
+call POST /api/register "{\"username\":\"$USER_H3\",\"password\":\"hunter2\"}"
+TOKEN_H3=$(jstr token)
+call POST /api/rooms/hand '{"raised":true}' "$TOKEN_H3"
+check "不在房间不能举手 409" "409" "$(status)"
+call POST /api/rooms/hand '{"raised":true}'
+check "未登录不能举手 401" "401" "$(status)"
+call POST /api/rooms/hand '{}' "$TOKEN_H1"
+check "缺 raised 字段 400" "400" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_H1"
+call POST /api/rooms/leave '{}' "$TOKEN_H2"
 
 echo
 echo "---- 路由 ----"

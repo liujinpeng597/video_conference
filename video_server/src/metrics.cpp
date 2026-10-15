@@ -66,7 +66,8 @@ Route classify(const std::string& path) {
     if (path == "/api/rooms/state") return Route::State;
     if (path == "/api/rooms/signal") return Route::Signal;
     if (path == "/api/rooms/chat") return Route::Chat;
-    if (path == "/api/rooms/enter" || path == "/api/rooms/leave") return Route::Rooms;
+    if (path == "/api/rooms/enter" || path == "/api/rooms/leave" || path == "/api/rooms/hand")
+        return Route::Rooms;
     if (path == "/api/ice") return Route::Ice;
     if (path == "/api/health") return Route::Health;
     if (path == "/metrics") return Route::Other;

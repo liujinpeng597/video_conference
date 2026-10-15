@@ -201,6 +201,7 @@
               <span class="avatar" aria-hidden="true">{{ initial(user) }}</span>
               <p>{{ media.stream ? '摄像头关着' : '没有摄像头画面' }}</p>
             </div>
+            <span class="tile__hand" v-if="myHand" title="已举手" aria-label="已举手">✋</span>
             <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
@@ -211,6 +212,7 @@
               <span class="avatar" aria-hidden="true">{{ initial(p.name) }}</span>
               <p>{{ peerHint(p.id) }}</p>
             </div>
+            <span class="tile__hand" v-if="p.hand" title="已举手" aria-label="已举手">✋</span>
             <p class="tile__tag">{{ p.name }}<span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span></p>
           </article>
         </div>
@@ -257,6 +259,10 @@
         </form>
       </aside>
 
+      <div class="floaties" aria-hidden="true">
+        <span class="floaty" v-for="r in reactions" :key="r.key">{{ r.emoji }}</span>
+      </div>
+
       <footer class="controls">
         <button class="ctl" type="button" @click="toggleMic" :disabled="!media.stream" :aria-pressed="micOn">
           <svg class="icon" aria-hidden="true"><use :href="micOn ? '#ic-microphone' : '#ic-microphone-off'"></use></svg>
@@ -270,6 +276,21 @@
           <svg class="icon" aria-hidden="true"><use :href="sharing ? '#ic-screen-share-off' : '#ic-screen-share'"></use></svg>
           <span class="ctl__label">{{ sharing ? '停止共享' : '共享屏幕' }}</span>
         </button>
+        <button class="ctl" type="button" :class="{ 'ctl--on': myHand }" @click="toggleHand" :aria-label="myHand ? '放下手' : '举手'">
+          <svg class="icon" aria-hidden="true"><use href="#ic-hand-stop"></use></svg>
+          <span class="ctl__label">{{ myHand ? '已举手' : '举手' }}</span>
+        </button>
+        <div class="reactwrap">
+          <button class="ctl" type="button" :class="{ 'ctl--on': emojiOpen }" @click="emojiOpen = !emojiOpen"
+                  aria-haspopup="true" :aria-expanded="emojiOpen" aria-label="发送表情">
+            <svg class="icon" aria-hidden="true"><use href="#ic-mood-smile"></use></svg>
+            <span class="ctl__label">表情</span>
+          </button>
+          <div class="reactpick" v-if="emojiOpen">
+            <button class="reactpick__btn" v-for="e in reactionChoices" :key="e" type="button"
+                    @click="sendReaction(e)" :aria-label="'发送表情 ' + e">{{ e }}</button>
+          </div>
+        </div>
         <button class="ctl ctl--chat" type="button" :class="{ 'ctl--on': chatOpen }" @click="toggleChat" :aria-expanded="chatOpen" aria-controls="room-chat">
           <svg class="icon" aria-hidden="true"><use href="#ic-message"></use></svg>
           <span class="ctl__label">聊天</span>
@@ -361,6 +382,20 @@
   <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
   <path d="M18 6l-12 12" />
   <path d="M6 6l12 12" /></symbol>
+  <symbol id="ic-hand-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M8 13v-7.5a1.5 1.5 0 0 1 3 0v6.5" />
+  <path d="M11 5.5v-2a1.5 1.5 0 1 1 3 0v8.5" />
+  <path d="M14 5.5a1.5 1.5 0 0 1 3 0v6.5" />
+  <path d="M17 7.5a1.5 1.5 0 0 1 3 0v8.5a6 6 0 0 1 -6 6h-2h.208a6 6 0 0 1 -5.012 -2.7a69.74 69.74 0 0 1 -.196 -.3c-.312 -.479 -1.407 -2.388 -3.286 -5.728a1.5 1.5 0 0 1 .536 -2.022a1.867 1.867 0 0 1 2.28 .28l1.47 1.47" /></symbol>
+  <symbol id="ic-mood-smile" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+  <path d="M9 10l.01 0" />
+  <path d="M15 10l.01 0" />
+  <path d="M9.5 15a3.5 3.5 0 0 0 5 0" /></symbol>
+  <symbol id="ic-user-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M8.18 8.189a4.01 4.01 0 0 0 2.616 2.627m3.507 -.545a4 4 0 1 0 -5.59 -5.552" />
+  <path d="M6 21v-2a4 4 0 0 1 4 -4h4c.412 0 .81 .062 1.183 .178m2.633 2.618c.12 .38 .184 .785 .184 1.204v2" />
+  <path d="M3 3l18 18" /></symbol>
 </svg>
 <!--ICONS:END-->
 

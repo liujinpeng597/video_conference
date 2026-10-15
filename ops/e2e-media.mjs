@@ -467,6 +467,46 @@ try {
     console.log(`聊天: tab0 发出, tab1 收到 (未读 ${got.unread}), 文本按纯文本渲染`);
   }
 
+  // 阶段 4: 举手 —— 状态在 participants[].hand, 自己和对端都该看到
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `(async () => { const vm = ${VM}; if (!vm.myHand) await vm.toggleHand(); return vm.myHand; })()`,
+  );
+  let handOk = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[0].sessionId);
+    const mine = await evalIn(cdp, pages[0].sessionId, `(${VM})?.myHand`);
+    await activate(cdp, pages[1].sessionId);
+    const seen = await evalIn(
+      cdp,
+      pages[1].sessionId,
+      `(${VM})?.remotes?.some((p) => p.hand)`,
+    );
+    if (mine && seen) { handOk = true; break; }
+    await sleep(500);
+  }
+  if (handOk) console.log('举手: 自己与对端都看到 ✋');
+  else { failed = true; console.error('举手断言失败: 对端没看到 hand=true'); }
+
+  // 阶段 5: 表情反应 —— 瞬时效果, 走信令广播 (kind='reaction')
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(${VM}).sendReaction('👍')`);
+  let reactOk = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    const n = await evalIn(
+      cdp,
+      pages[1].sessionId,
+      `(${VM})?.reactions?.filter((r) => r.emoji === '👍').length || 0`,
+    );
+    if (n >= 1) { reactOk = true; break; }
+    await sleep(400);
+  }
+  if (reactOk) console.log('表情反应: 对端收到了 👍');
+  else { failed = true; console.error('表情反应断言失败: 对端没收到反应'); }
+
   // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
   if (process.env.E2E_SHOT) {
     await activate(cdp, pages[1].sessionId);

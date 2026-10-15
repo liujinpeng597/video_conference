@@ -52,6 +52,21 @@ std::string join3(const std::string& a, const std::string& b, const std::string&
     return s;
 }
 
+// 把 a/b/c/d 用 \x1f 拼起来 (成员现在是 pid\x1fuser\x1fseen\x1fhand 四段)
+std::string join4(const std::string& a, const std::string& b, const std::string& c,
+                  const std::string& d) {
+    std::string s;
+    s.reserve(a.size() + b.size() + c.size() + d.size() + 3);
+    s += a;
+    s.push_back(kSep);
+    s += b;
+    s.push_back(kSep);
+    s += c;
+    s.push_back(kSep);
+    s += d;
+    return s;
+}
+
 // 按前 n 个分隔符切开, 剩下的整段作为最后一项 (payload 里可能有任意内容)
 bool splitN(const std::string& s, int n, std::vector<std::string>* out) {
     size_t pos = 0;
@@ -69,13 +84,23 @@ Member parseMember(const std::string& token, const std::string& value, int64_t n
     Member m;
     m.token = token;
     std::vector<std::string> parts;
-    if (!splitN(value, 2, &parts)) {
-        m.live = false;  // 字段坏了就当不在
-        return m;
+    if (splitN(value, 3, &parts)) {  // 新格式: pid\x1fuser\x1fseen\x1fhand
+        m.pid = parts[0];
+        m.user = parts[1];
+        m.seenMs = std::strtoll(parts[2].c_str(), nullptr, 10);
+        m.hand = (parts[3] == "1");
+    } else {
+        // 兼容旧格式 (3 段): 滚动升级时房间里可能还留着老值, 当作没举手
+        parts.clear();
+        if (!splitN(value, 2, &parts)) {
+            m.live = false;  // 字段坏了就当不在
+            return m;
+        }
+        m.pid = parts[0];
+        m.user = parts[1];
+        m.seenMs = std::strtoll(parts[2].c_str(), nullptr, 10);
+        m.hand = false;
     }
-    m.pid = parts[0];
-    m.user = parts[1];
-    m.seenMs = std::strtoll(parts[2].c_str(), nullptr, 10);
     m.live = (now - m.seenMs) <= kPresenceTtlMs;
     return m;
 }
@@ -124,7 +149,8 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 
     *pid = rnd::hex(6);  // 每次进房间换一个地址, 免得被人拿旧的乱发
 
-    if (!redis::hSet(roomKey(room), token, join3(*pid, user, std::to_string(now)), err)) {
+    // 进房间默认没举手 (第 4 段是 hand 标志)
+    if (!redis::hSet(roomKey(room), token, join4(*pid, user, std::to_string(now), "0"), err)) {
         return Enter::Error;
     }
     if (!redis::expire(roomKey(room), kKeyTtlSec, err)) return Enter::Error;
@@ -146,6 +172,7 @@ Enter enter(const std::string& token, const std::string& user, const std::string
         m.user = user;
         m.seenMs = now;
         m.live = true;
+        m.hand = false;
         patched = true;
     }
     if (!patched) {
@@ -171,14 +198,50 @@ bool sync(const std::string& token, uint64_t since, std::string* room,
     *room = me.room;
 
     const int64_t now = nowMs();
-    // 心跳: 刷新自己的 seen, 顺便续上 key 的 TTL
-    if (!redis::hSet(roomKey(me.room), token, join3(me.pid, me.user, std::to_string(now)), err)) return false;
+    // 先一次 HGETALL 拿到所有人, 顺带读出我自己的 hand —— 心跳会重写我那一格,
+    // 不能把举手标志冲掉。放在心跳之前只读一次, 不多花 Redis 往返。
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return false;
+    bool hand = false;
+    for (const redis::Field& f : fields) {
+        if (f.name == token) {
+            hand = parseMember(f.name, f.value, now).hand;
+            break;
+        }
+    }
+
+    // 心跳: 刷新自己的 seen + 保留 hand, 顺便续上 room / session 的 TTL
+    if (!redis::hSet(roomKey(me.room), token,
+                     join4(me.pid, me.user, std::to_string(now), hand ? "1" : "0"), err)) {
+        return false;
+    }
     if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return false;
     if (!redis::expire(sessionKey(token), kKeyTtlSec, err)) return false;
 
-    std::vector<redis::Field> fields;
-    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return false;
-    for (const redis::Field& f : fields) members->push_back(parseMember(f.name, f.value, now));
+    // 用刚读到的字段拼成员表; 我自己的那一格补成"心跳之后"的值
+    bool sawMe = false;
+    for (const redis::Field& f : fields) {
+        Member m = parseMember(f.name, f.value, now);
+        if (m.token == token) {
+            m.pid = me.pid;
+            m.user = me.user;
+            m.seenMs = now;
+            m.live = true;
+            m.hand = hand;
+            sawMe = true;
+        }
+        members->push_back(std::move(m));
+    }
+    if (!sawMe) {  // 兜底: 理论上不会发生 (enter 已经把我写进去了)
+        Member m;
+        m.token = token;
+        m.pid = me.pid;
+        m.user = me.user;
+        m.seenMs = now;
+        m.live = true;
+        m.hand = hand;
+        members->push_back(std::move(m));
+    }
 
     std::vector<std::string> raw;
     if (!redis::lRange(mailboxKey(token), &raw, err)) return false;
@@ -270,6 +333,19 @@ bool chatSince(const std::string& room, uint64_t since, std::vector<ChatMessage>
         out->push_back(std::move(m));
     }
     return true;
+}
+
+Hand setHand(const std::string& token, bool raised, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Hand::NotInRoom : Hand::Error;
+    const int64_t now = nowMs();
+    // seen 顺带刷成现在 (举手本来也是一次动作), 所以不必先读旧值
+    if (!redis::hSet(roomKey(me.room), token,
+                     join4(me.pid, me.user, std::to_string(now), raised ? "1" : "0"), err)) {
+        return Hand::Error;
+    }
+    if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Hand::Error;
+    return Hand::Ok;
 }
 
 bool leave(const std::string& token, std::string* err) {

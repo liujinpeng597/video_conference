@@ -40,6 +40,7 @@
   const videoEls = new Map();  // pid -> <video>
   const peerMissing = new Map();   // pid -> 连续几拍不在名单里 (连续两拍才拆连接)
   const peerRebuilds = new Map();  // pid -> 看门狗已重建次数 (连上清零, 上限 3 次)
+  let reactionSeq = 0;             // 表情浮动体的自增 key
   // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
   let shareStream = null;          // 正在共享的 getDisplayMedia 流
   let wakeLock = null;             // 屏幕常亮锁 (手机端尽量别锁屏)
@@ -117,6 +118,11 @@
         chatSending: false,
         chatError: '',
 
+        // 举手 / 表情: 举手状态在 participants[].hand (服务端权威); 表情是本地浮动的瞬时效果
+        emojiOpen: false,
+        reactions: [],   // [{ key, emoji }] 2.5 秒后自动移除
+        reactionChoices: ['👍', '👏', '🎉', '😂', '❤️', '✋'],
+
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
         copied: false,
@@ -134,6 +140,11 @@
       tiles() { return String(this.remotes.length + 1); },
       micOn() { return this.media.mic; },
       camOn() { return this.media.cam; },
+      // 我有没有举手: 以服务端返回的成员表为准 (自己那一项的 hand 字段)
+      myHand() {
+        const me = this.participants.find((p) => p.me);
+        return !!(me && me.hand);
+      },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -459,6 +470,7 @@
       // --------------------------------------------------------------- 聊天
       // 聊天复用同一条轮询 (/api/rooms/state 里带 chat 游标), 不额外发请求;
       // 消息文本在模板里用 {{ }} 渲染 (Vue 自动转义), 不做任何 innerHTML。
+      // 顺带清房间作用域的瞬时 UI (表情浮动体)。
       resetChat() {
         this.chatMessages = [];
         this.chatSince = 0;
@@ -466,6 +478,8 @@
         this.chatInput = '';
         this.chatSending = false;
         this.chatError = '';
+        this.reactions = [];
+        this.emojiOpen = false;
       },
 
       toggleChat() {
@@ -525,6 +539,34 @@
         } finally {
           this.chatSending = false;
         }
+      },
+
+      // --------------------------------------------------------- 举手 / 表情
+      // 举手状态由服务端 (participants[].hand) 权威; 切完立刻补一拍, UI 马上就变。
+      // 出错不弹提示: 下一拍同步会以服务端状态为准, 自然纠正。
+      async toggleHand() {
+        try {
+          await this.authed('POST', '/api/rooms/hand', { raised: !this.myHand });
+          this.scheduleSync(0);
+        } catch (err) {
+          if (err.dead) { this.forgetSession(); this.goAuth(); }
+        }
+      },
+
+      // 表情反应: 走信令广播 (kind='reaction')。它是瞬时效果, 不进房间状态, 所以不用后端存储。
+      sendReaction(emoji) {
+        if (!this.reactionChoices.includes(emoji)) return;
+        this.emojiOpen = false;
+        this.floatReaction(this.myPid, emoji);  // 自己本地也浮一下
+        for (const p of this.remotes) this.sendSignal(p.id, 'reaction', { emoji });
+      },
+      floatReaction(from, emoji) {
+        if (!this.reactionChoices.includes(emoji)) return;  // 只认白名单里的表情
+        const key = ++reactionSeq;
+        this.reactions.push({ key, from, emoji });
+        setTimeout(() => {
+          this.reactions = this.reactions.filter((r) => r.key !== key);
+        }, 2500);
       },
 
       // ------------------------------------------------------- 轮询 / 同步
@@ -733,6 +775,11 @@
       async handleSignal(msg) {
         // 只处理同一份名单里的人: 名单和消息是同一次响应拿到的, 所以对得上
         if (!this.remotes.some((p) => p.id === msg.from)) return;
+        // 表情反应是瞬时效果, 不建 PeerConnection
+        if (msg.kind === 'reaction') {
+          this.floatReaction(msg.from, (msg.payload || {}).emoji);
+          return;
+        }
         const state = this.ensureCall(msg.from);
         const pc = state.pc;
         const payload = msg.payload || {};

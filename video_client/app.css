@@ -775,6 +775,73 @@ button, input { font-family: inherit; }
   text-align: center;
 }
 
+/* 举手标记: 贴在视频块右上角, 轻轻晃一下表示"我想说话" */
+.tile__hand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / .45));
+  animation: hand-wave 1.2s ease-in-out infinite;
+}
+@keyframes hand-wave {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-12deg); }
+}
+
+/* 表情选择器: 在"表情"按钮上方弹一排 emoji */
+.reactwrap { position: relative; }
+.reactpick {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgb(0 0 0 / .12);
+  z-index: 21;
+}
+.reactpick__btn {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.reactpick__btn:hover { background: var(--fill-hover); }
+
+/* 浮动表情: 从底部中央往上飘再消失 (纯装饰, 不挡点击) */
+.floaties {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 84px;
+  z-index: 26;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+.floaty {
+  font-size: 30px;
+  line-height: 1;
+  animation: floaty 2.5s ease-out forwards;
+}
+@keyframes floaty {
+  0% { opacity: 0; transform: translateY(10px) scale(.85); }
+  12% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-46px) scale(1.05); }
+}
+
 /* ------------------------------------------------------------------ 动效 */
 @media (prefers-reduced-motion: no-preference) {
   .fade-enter-active, .fade-leave-active {
@@ -789,6 +856,8 @@ button, input { font-family: inherit; }
     animation-duration: .01ms !important;
     transition-duration: .01ms !important;
   }
+  /* 关掉动效时, 浮动表情静止显示到自动消失为止 (否则会一闪就没) */
+  .floaty { animation: none; opacity: 1; }
 }
 
 /* ---------------------------------------------------------------- 窄屏 */

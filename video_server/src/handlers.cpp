@@ -98,6 +98,8 @@ std::string peersJson(const std::vector<presence::Member>& members, const std::s
         arr += json::quote(m.user);
         arr += ",\"me\":";
         arr += (m.token == selfToken) ? "true" : "false";
+        arr += ",\"hand\":";
+        arr += m.hand ? "true" : "false";
         arr += '}';
     }
     arr += ']';
@@ -735,6 +737,26 @@ Resp apiRoomsChat(const Request& req) {
                   ",\"text\":" + json::quote(msg.text) + "}");
 }
 
+// 举手 / 放手: 状态进房间成员表, 别人从 /api/rooms/state 的 participants[].hand 读到。
+Resp apiRoomsHand(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    bool raised = false;
+    if (!json::getBool(req.body, "raised", &raised)) return errJson(400, "请求体里要有 raised (布尔)");
+
+    std::string err;
+    switch (presence::setHand(req.token, raised, &err)) {
+        case presence::Hand::Ok:
+            return okJson(std::string("{\"ok\":true,\"hand\":") + (raised ? "true}" : "false}"));
+        case presence::Hand::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "切换举手失败：" + err);
+    }
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -827,6 +849,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/chat") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsChat(req);
+    }
+    if (req.path == "/api/rooms/hand") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsHand(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");
