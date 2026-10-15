@@ -63,11 +63,12 @@ docker compose up -d --build
 - 弱网自愈：切网自动 ICE 重启，协商卡住的连接由看门狗自动重建重试
 - 三个后端实例 + nginx 轮询，杀掉一台不影响服务
 - 登录 / 注册按 IP 限流 + 按账号失败锁定（防爆破）
+- 屏幕共享（`replaceTrack` 无缝切换，对端不重新协商）
 
 **还不能：**
 
 - **4-6 人以上**：mesh 下每个人要给其他每个人发一路，上行是 (N-1) 倍。要更多人得换 SFU。
-- 屏幕共享、聊天、举手、录制、虚拟背景
+- 聊天、举手、录制、虚拟背景
 - 跨网络通话需要一台有公网地址的 TURN：compose 已内置 coturn，部署时把 `TURN_URL` 指过去即可；本机 / 局域网用不到
 - TLS：开发默认明文 HTTP；`docker-compose.prod.yml` 一键开 HTTPS（证书怎么来见 `nginx/README.md`）
 

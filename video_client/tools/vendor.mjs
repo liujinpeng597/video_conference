@@ -14,7 +14,8 @@ const ICON_BASE = 'https://unpkg.com/@tabler/icons@3.31.0/icons/outline';
 // 和 index.html 里的 #ic-xxx 一一对应
 const ICONS = [
   'alert-triangle', 'check', 'eye', 'eye-off', 'link', 'logout',
-  'microphone', 'microphone-off', 'phone-off', 'refresh', 'user', 'video', 'video-off',
+  'microphone', 'microphone-off', 'phone-off', 'refresh', 'screen-share', 'screen-share-off',
+  'user', 'video', 'video-off',
 ];
 
 const SYMBOL_ATTRS =

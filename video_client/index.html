@@ -196,12 +196,12 @@
 
         <div class="grid" :data-n="tiles">
           <article class="tile">
-            <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn"></video>
-            <div class="tile__off" v-if="!camOn || !media.stream">
+            <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn || sharing"></video>
+            <div class="tile__off" v-if="(!camOn || !media.stream) && !sharing">
               <span class="avatar" aria-hidden="true">{{ initial(user) }}</span>
               <p>{{ media.stream ? '摄像头关着' : '没有摄像头画面' }}</p>
             </div>
-            <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__muted" v-if="!micOn">已静音</span></p>
+            <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
           <article class="tile" v-for="p in remotes" :key="p.id">
@@ -235,6 +235,10 @@
         <button class="ctl" type="button" @click="toggleCam" :disabled="!media.stream" :aria-pressed="camOn">
           <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
           <span class="ctl__label">{{ camOn ? '摄像头' : '已关闭' }}</span>
+        </button>
+        <button class="ctl" type="button" :class="{ 'ctl--share-on': sharing }" @click="toggleShare">
+          <svg class="icon" aria-hidden="true"><use :href="sharing ? '#ic-screen-share-off' : '#ic-screen-share'"></use></svg>
+          <span class="ctl__label">{{ sharing ? '停止共享' : '共享屏幕' }}</span>
         </button>
         <button class="ctl ctl--leave" type="button" @click="leave">
           <svg class="icon" aria-hidden="true"><use href="#ic-phone-off"></use></svg>
@@ -289,6 +293,19 @@
   <symbol id="ic-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
   <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
   <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" /></symbol>
+  <symbol id="ic-screen-share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M21 12v3a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10a1 1 0 0 1 1 -1h9" />
+  <path d="M7 20l10 0" />
+  <path d="M9 16l0 4" />
+  <path d="M15 16l0 4" />
+  <path d="M17 4h4v4" />
+  <path d="M16 9l5 -5" /></symbol>
+  <symbol id="ic-screen-share-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+  <path d="M21 12v3a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10a1 1 0 0 1 1 -1h9" />
+  <path d="M7 20l10 0" />
+  <path d="M9 16l0 4" />
+  <path d="M15 16l0 4" />
+  <path d="M17 8l4 -4m-4 0l4 4" /></symbol>
   <symbol id="ic-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>
   <path d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0 -8 0" />
   <path d="M6 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" /></symbol>

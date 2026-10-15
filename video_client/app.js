@@ -40,6 +40,9 @@
   const videoEls = new Map();  // pid -> <video>
   const peerMissing = new Map();   // pid -> 连续几拍不在名单里 (连续两拍才拆连接)
   const peerRebuilds = new Map();  // pid -> 看门狗已重建次数 (连上清零, 上限 3 次)
+  // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
+  let shareStream = null;          // 正在共享的 getDisplayMedia 流
+  let wakeLock = null;             // 屏幕常亮锁 (手机端尽量别锁屏)
 
   // 静态资源和 API 都由 video_server 提供, 所以是同一个源, 路径直接写相对根
   async function call(method, path, body, token) {
@@ -106,6 +109,7 @@
         audioBlocked: false,
 
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
+        sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
         copied: false,
         videoEl: null,
         syncTimer: 0,
@@ -141,7 +145,10 @@
       // 页面从后台切回前台时立刻补一拍心跳: 后台标签页的定时器会被浏览器节流,
       // 可能超过服务端 30 秒的心跳阈值, 别人会误判你掉线。
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && this.view === 'room') this.scheduleSync(0);
+        if (document.visibilityState === 'visible' && this.view === 'room') {
+          this.scheduleSync(0);
+          this.acquireWakeLock();  // Wake Lock 在页面隐藏时会被系统释放, 回前台重新申请
+        }
       });
 
       // 外接摄像头 / 麦克风插拔 (路线图 P1 前端兼容性): 拔掉自动换轨, 插回来自动恢复,
@@ -153,6 +160,8 @@
 
     beforeUnmount() {
       this.stopTimers();
+      this.stopShare();
+      this.releaseWakeLock();
       this.closeAllCalls();
       this.stopMedia();
     },
@@ -400,6 +409,7 @@
           this.sigSince = 0;      // 进房间就从头开始收信令
           this.lastHandledSeq = 0;
           this.view = 'room';
+          this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
           this.scheduleSync(0);
           this.clockTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
@@ -484,6 +494,8 @@
       // 被动退出房间 (不是用户点的"离开"): 本地清干净, 回大厅并说明原因
       droppedOut(msg) {
         this.stopTimers();
+        this.stopShare();
+        this.releaseWakeLock();
         this.closeAllCalls();
         this.room = '';
         this.participants = [];
@@ -533,17 +545,38 @@
           disconnectTimer: 0,  // disconnected 后等 4 秒, 还不恢复就 ICE 重启
           iceRestartedAt: 0,   // 上次 ICE 重启时间 (5 秒节流)
           iceRestarts: 0,      // 连续重启次数, 连上清零 (上限 3)
+          shareAdded: false,   // 这条连接的视频轨是"共享时补加的" (停共享要 removeTrack)
         };
         calls.set(pid, state);
         this.peerState[pid] = pc.connectionState;
 
-        const stream = this.media.stream;
-        const tracks = stream ? stream.getTracks() : [];
-        if (tracks.length > 0) {
-          for (const t of tracks) pc.addTrack(t, stream);
-        } else {
+        // 发哪些轨: 摄像头流照发; 正在共享屏幕时, 视频轨换成屏幕轨。
+        // 完全没有流又没共享 = 纯接收 (recvonly), 否则对方的 offer 会被我们整条拒掉。
+        const camStream = this.media.stream;
+        const camTracks = camStream ? camStream.getTracks() : [];
+        const shareTrack = (this.sharing && shareStream) ? shareStream.getVideoTracks()[0] : null;
+        if (camTracks.length === 0 && !shareTrack) {
           pc.addTransceiver('audio', { direction: 'recvonly' });
           pc.addTransceiver('video', { direction: 'recvonly' });
+        } else {
+          let sentVideo = false;
+          for (const t of camTracks) {
+            if (t.kind === 'video') continue;  // 视频统一在下面处理
+            pc.addTrack(t, camStream);
+          }
+          if (shareTrack) {
+            pc.addTrack(shareTrack, shareStream);
+            state.shareAdded = true;  // 停共享时 removeTrack, 而不是换回摄像头
+            sentVideo = true;
+          } else if (camTracks.length > 0) {
+            const camVideo = camStream.getVideoTracks()[0];
+            if (camVideo) {
+              pc.addTrack(camVideo, camStream);
+              sentVideo = true;
+            }
+          }
+          if (!sentVideo) pc.addTransceiver('video', { direction: 'recvonly' });
+          if (camTracks.length === 0) pc.addTransceiver('audio', { direction: 'recvonly' });
         }
 
         pc.onicecandidate = (ev) => {
@@ -726,6 +759,8 @@
 
       async leave() {
         this.stopTimers();
+        this.stopShare();
+        this.releaseWakeLock();
         this.closeAllCalls();
         try { await this.authed('POST', '/api/rooms/leave', {}); } catch (err) { /* 忽略 */ }
         this.room = '';
@@ -867,6 +902,89 @@
         if (!track) return;
         track.enabled = !track.enabled;
         this.media.cam = track.enabled;
+      },
+
+      // ------------------------------------------------------------- 屏幕共享
+      // 已有的对端连接优先用 replaceTrack 换视频轨: 不触发重新协商, 对端画面无缝切过去;
+      // 从"纯接收"模式 (当初就没有摄像头) 建立的对端只能 addTrack, 那一次会重新协商 ——
+      // 正是 perfect negotiation 覆盖的场景。浏览器共享条里的"停止共享"通过 track ended 回调处理。
+      async toggleShare() {
+        if (this.sharing) { this.stopShare(); return; }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          console.warn('这个浏览器不支持屏幕共享 (getDisplayMedia)');
+          return;
+        }
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        } catch (err) {
+          return;  // 用户取消了选择源, 静默即可
+        }
+        const track = stream.getVideoTracks()[0];
+        if (!track) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        shareStream = stream;
+        this.sharing = true;
+        track.addEventListener('ended', () => this.stopShare());  // 浏览器共享条的"停止共享"
+        for (const state of calls.values()) {
+          const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            try { await sender.replaceTrack(track); } catch (err) { console.warn('屏幕轨替换失败', err); }
+          } else {
+            try {
+              state.pc.addTrack(track, shareStream);  // 触发重新协商, 交给 perfect negotiation
+              state.shareAdded = true;
+            } catch (err) {
+              console.warn('加屏幕轨失败', err);
+            }
+          }
+        }
+        if (this.videoEl) this.videoEl.srcObject = shareStream;  // 本地预览切到屏幕
+      },
+
+      stopShare() {
+        if (!this.sharing) return;
+        this.sharing = false;
+        const track = shareStream && shareStream.getVideoTracks()[0];
+        const camTrack = this.media.stream ? this.media.stream.getVideoTracks()[0] : null;
+        for (const state of calls.values()) {
+          if (state.shareAdded) {
+            state.shareAdded = false;
+            const sender = track ? state.pc.getSenders().find((s) => s.track === track) : null;
+            if (sender) { try { state.pc.removeTrack(sender); } catch (err) { /* 连接可能已关 */ } }
+          } else {
+            const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+            // 换回摄像头轨; 摄像头本来就没有/已停 => null, 只停发
+            if (sender) sender.replaceTrack(camTrack || null).catch(() => {});
+          }
+        }
+        if (shareStream) {
+          shareStream.getTracks().forEach((t) => t.stop());
+          shareStream = null;
+        }
+        if (this.videoEl) this.videoEl.srcObject = this.media.stream;
+      },
+
+      // ------------------------------------------------------------- 防锁屏
+      // 手机端锁屏会把 JS 挂起, 超过心跳阈值就被别人判掉线; 进房时尽量申请屏幕常亮
+      // (Screen Wake Lock)。不支持 / 被电量策略拒绝都静默跳过, 不影响任何功能。
+      async acquireWakeLock() {
+        try {
+          if (!navigator.wakeLock || wakeLock) return;
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener('release', () => { wakeLock = null; });
+        } catch (err) { /* 无所谓 */ }
+      },
+
+      releaseWakeLock() {
+        try {
+          if (wakeLock) {
+            wakeLock.release();
+            wakeLock = null;
+          }
+        } catch (err) { /* 忽略 */ }
       },
     },
   }).mount('#app');

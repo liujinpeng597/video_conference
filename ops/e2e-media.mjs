@@ -166,6 +166,8 @@ const chrome = spawn(
     '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
+    // 屏幕共享阶段用: 无头环境没有取源弹窗, 让它自动选“整个屏幕”(选不到会走跳过分支)
+    '--auto-select-desktop-capture-source=Entire screen',
     '--no-sandbox',
     '--disable-gpu',
     'about:blank',
@@ -325,6 +327,87 @@ try {
   }
   console.log(`三个标签页合计发出 ${totalOut} 字节`);
   if (totalOut <= 0) failed = true;
+
+  // 阶段 2: 屏幕共享 —— 无头里起不起得来取决浏览器, 起不来就跳过 (不判失败);
+  // 起来了就断言: 连接不断、tab0 继续发、另外两页继续在收, 停止后能切回且不断线。
+  await activate(cdp, pages[0].sessionId);
+  const canShare = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `typeof (${VM})?.toggleShare === 'function'`,
+  );
+  if (!canShare) {
+    console.log('提示: 页面没有屏幕共享能力, 跳过共享断言');
+  } else {
+    const before = [];
+    for (let i = 0; i < pages.length; i++) {
+      await activate(cdp, pages[i].sessionId);
+      before.push(await evalIn(cdp, pages[i].sessionId, statsExpr));
+    }
+    const sharing = await evalIn(
+      cdp,
+      pages[0].sessionId,
+      `(async () => { const vm = ${VM}; await vm.toggleShare(); return vm.sharing; })()`,
+    );
+    if (!sharing) {
+      console.log('提示: 无头环境起不了屏幕共享 (getDisplayMedia 不可用或被拒), 跳过共享断言');
+    } else {
+      console.log('屏幕共享已启动, 等 4 秒看媒体是否继续流动...');
+      await sleep(4000);
+      const after = [];
+      const shareStates = [];
+      for (let i = 0; i < pages.length; i++) {
+        await activate(cdp, pages[i].sessionId);
+        after.push(await evalIn(cdp, pages[i].sessionId, statsExpr));
+        shareStates.push(
+          await evalIn(
+            cdp,
+            pages[i].sessionId,
+            `[...window.tongpin.calls.values()].map((s) => s.pc.connectionState)`,
+          ),
+        );
+      }
+      const okStates = shareStates.every(
+        (ss) => ss.length === 2 && ss.every((s) => s === 'connected'),
+      );
+      const tab0Flow = after[0].outBytes > before[0].outBytes;
+      const othersFlow =
+        after[1].inBytes > before[1].inBytes && after[2].inBytes > before[2].inBytes;
+      if (okStates && tab0Flow && othersFlow) {
+        console.log(
+          `共享中: 连接保持, tab0 发 +${after[0].outBytes - before[0].outBytes} 字节, ` +
+            `对端收 +${after[1].inBytes - before[1].inBytes} / +${after[2].inBytes - before[2].inBytes} 字节`,
+        );
+      } else {
+        failed = true;
+        console.error(
+          `共享断言失败: states=${JSON.stringify(shareStates)} ` +
+            `发 +${after[0].outBytes - before[0].outBytes} 收 +${after[1].inBytes - before[1].inBytes}/+${after[2].inBytes - before[2].inBytes}`,
+        );
+      }
+      const stillSharing = await evalIn(
+        cdp,
+        pages[0].sessionId,
+        `(async () => { const vm = ${VM}; vm.stopShare(); return vm.sharing; })()`,
+      );
+      if (stillSharing) {
+        failed = true;
+        console.error('停止共享后 sharing 仍为 true');
+      }
+      await sleep(1200);
+      const backStates = await evalIn(
+        cdp,
+        pages[0].sessionId,
+        `[...window.tongpin.calls.values()].map((s) => s.pc.connectionState)`,
+      );
+      if (backStates.some((s) => s !== 'connected')) {
+        failed = true;
+        console.error(`停共享后连接异常: ${JSON.stringify(backStates)}`);
+      } else {
+        console.log('屏幕共享停止: 已切回摄像头, 连接保持');
+      }
+    }
+  }
 
   if (failed) {
     for (let i = 0; i < pages.length; i++) {

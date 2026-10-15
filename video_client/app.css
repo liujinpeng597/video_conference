@@ -652,6 +652,9 @@ button, input { font-family: inherit; }
 .ctl--leave { border-color: var(--danger); background: var(--danger); color: #fff; }
 .ctl--leave:hover:not(:disabled) { border-color: var(--danger-hover); background: var(--danger-hover); color: #fff; }
 .ctl--leave .icon { color: #fff; }
+/* 屏幕共享进行中: 主色高亮, 和"关闭态"的红色语义区分开 (这个按钮没有"关"的语义) */
+.ctl--share-on { border-color: var(--brand); color: var(--brand); }
+.ctl--share-on .icon { color: var(--brand); }
 
 /* ------------------------------------------------------------------ 动效 */
 @media (prefers-reduced-motion: no-preference) {
