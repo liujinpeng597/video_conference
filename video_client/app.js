@@ -143,6 +143,7 @@
         media: { stream: null, cam: true, mic: true, error: '', recovering: false },
         sharing: false,             // 屏幕共享进行中 (真正的流在模块级, 不进响应式)
         bgMode: 'off',              // 虚拟背景(简易人像): 'off' | 'blur' | 'solid'
+        focusPid: '',               // 点某格放大 (演示者视图); 空 = 宫格
         copied: false,
         videoEl: null,
         syncTimer: 0,
@@ -183,6 +184,19 @@
       this.checkHealth();
       this.prefillFromHash();
       this.restoreSession();
+
+      // 会议里的键盘快捷键: m 静音 / v 关摄像头 / f 全屏。输入框里打字时不抢键。
+      window.addEventListener('keydown', (e) => {
+        if (this.view !== 'room') return;
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const k = e.key.toLowerCase();
+        if (k === 'm') { e.preventDefault(); this.toggleMic(); }
+        else if (k === 'v') { e.preventDefault(); this.toggleCam(); }
+        else if (k === 'f') { e.preventDefault(); this.toggleFullscreen(); }
+        else if (e.key === 'Escape') { this.focusPid = ''; }
+      });
 
       // 页面从后台切回前台时立刻补一拍心跳: 后台标签页的定时器会被浏览器节流,
       // 可能超过服务端 30 秒的心跳阈值, 别人会误判你掉线。
@@ -717,6 +731,19 @@
         } catch (err) {
           if (err.dead) { this.sessionDead(); return; }
           this.flash(err.message || '移出失败');
+        }
+      },
+
+      // ------------------------------------------------------------- 视图
+      // 点某一格放大 (演示者视图), 再点一次回宫格; Esc 也能退出放大。
+      toggleFocus(pid) {
+        this.focusPid = this.focusPid === pid ? '' : pid;
+      },
+      toggleFullscreen() {
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        } else if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
         }
       },
 

@@ -741,6 +741,37 @@ try {
   await evalIn(cdp, pages[0].sessionId,
     `(async () => { const vm = ${VM}; if (!vm.micOn) vm.toggleMic(); return vm.micOn; })()`);
 
+  // 阶段 4.6: 视图与快捷键 —— 点某格放大 (演示者视图) + 键盘 v 关摄像头
+  await activate(cdp, pages[0].sessionId);
+  const view = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const target = (vm.remotes[0] || {}).id;
+      vm.toggleFocus(target);
+      await vm.$nextTick();   // class 绑定是异步渲染的
+      return { focus: vm.focusPid, target, cls: !!document.querySelector('.grid.is-focus') };
+    })()`);
+  const key = (type) => cdp.send('Input.dispatchKeyEvent',
+    { type, key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, text: type === 'keyDown' ? 'v' : undefined },
+    pages[0].sessionId);
+  await key('keyDown');
+  await sleep(300);
+  const camAfterKey = await evalIn(cdp, pages[0].sessionId, `(${VM})?.camOn`);
+  await key('keyDown');   // 再按一次还原
+  if (process.env.E2E_SHOT_FOCUS) {
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_FOCUS, Buffer.from(s.data, 'base64'));
+    console.log(`截图(放大视图): ${process.env.E2E_SHOT_FOCUS}`);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).focusPid = ''; return true; })()`);
+  await sleep(300);
+  const camBack = await evalIn(cdp, pages[0].sessionId, `(${VM})?.camOn`);
+  if (view.focus && view.focus === view.target && view.cls && camAfterKey === false && camBack === true) {
+    console.log(`视图/快捷键: 点格放大生效 (focus=${view.focus}), 按 v 关摄像头再按回来`);
+  } else {
+    failed = true;
+    console.error(`视图/快捷键断言失败: ${JSON.stringify({ view, camAfterKey, camBack })}`);
+  }
+
   // 阶段 5: 表情反应 —— 瞬时效果, 走信令广播 (kind='reaction')
   await activate(cdp, pages[0].sessionId);
   await evalIn(cdp, pages[0].sessionId, `(${VM}).sendReaction('👍')`);

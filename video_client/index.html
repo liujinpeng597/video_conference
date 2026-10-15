@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=14">
+<link rel="stylesheet" href="app.css?v=15">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -220,6 +220,7 @@
         <div class="topbar__right">
           <span class="chip">{{ participants.length }} 人在线</span>
           <span class="chip chip--lock" v-if="locked" title="会议已锁定，新人进不来">已锁定</span>
+          <button class="btn btn--text" type="button" @click="toggleFullscreen" title="全屏 (快捷键 f)">全屏</button>
           <button class="btn btn--text" type="button" v-if="amHost" @click="toggleLock">
             {{ locked ? '解锁会议' : '锁定会议' }}
           </button>
@@ -235,8 +236,8 @@
           浏览器拦住了自动播放，点这里开启对方的声音
         </button>
 
-        <div class="grid" :data-n="tiles">
-          <article class="tile">
+        <div class="grid" :data-n="tiles" :class="{ 'is-focus': focusPid }">
+          <article class="tile" :class="{ 'tile--focus': focusPid === myPid }" @click="toggleFocus(myPid)">
             <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn || sharing"></video>
             <div class="tile__off" v-if="(!camOn || !media.stream) && !sharing">
               <span class="avatar" aria-hidden="true">{{ initial(user) }}</span>
@@ -246,7 +247,8 @@
             <p class="tile__tag"><b class="tile__you">你</b>{{ user }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
-          <article class="tile" v-for="p in remotes" :key="p.id">
+          <article class="tile" v-for="p in remotes" :key="p.id"
+                   :class="{ 'tile--focus': focusPid === p.id }" @click="toggleFocus(p.id)">
             <video :ref="(el) => bindRemoteVideo(el, p.id)" class="tile__video tile__video--remote"
                    autoplay playsinline></video>
             <div class="tile__off" v-if="!peerHasVideo[p.id]">
@@ -255,7 +257,7 @@
             </div>
             <span class="tile__hand" v-if="p.hand" title="已举手" aria-label="已举手">✋</span>
             <button class="tile__kick" v-if="amHost" type="button" :aria-label="'移出 ' + p.name"
-                    title="移出会议" @click="kickMember(p.id)">
+                    title="移出会议" @click.stop="kickMember(p.id)">
               <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
             </button>
             <p class="tile__tag">{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
@@ -460,7 +462,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=14"></script>
-<script src="app.js?v=14"></script>
+<script src="vendor/vue.global.prod.js?v=15"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
