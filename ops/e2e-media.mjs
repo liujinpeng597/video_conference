@@ -170,6 +170,7 @@ const chrome = spawn(
     '--auto-select-desktop-capture-source=Entire screen',
     '--no-sandbox',
     '--disable-gpu',
+    ...(process.env.E2E_WINDOW ? [`--window-size=${process.env.E2E_WINDOW}`] : []),
     'about:blank',
   ],
   { stdio: ['ignore', 'ignore', 'pipe'] },
@@ -253,8 +254,56 @@ try {
   }
 
   // 第 1 个标签页开一个新房间, 读出房间号; 另外两个用同一个房间号进房
+  // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经 .join 用 margin-inline:auto
+  // 变成"按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
+  await activate(cdp, pages[0].sessionId);
+  await cdp.send(
+    'Emulation.setDeviceMetricsOverride',
+    { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false },
+    pages[0].sessionId,
+  );
+  const wide = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `(async () => {
+       const vm = ${VM};
+       if (vm.camOn) vm.toggleCam();            // 关掉摄像头, 复现出问题的状态
+       await vm.$nextTick();
+       const preview = Math.round(document.querySelector('.preview').getBoundingClientRect().width);
+       const frame = Math.round(document.querySelector('.preview__frame').getBoundingClientRect().width);
+       if (!vm.camOn) vm.toggleCam();           // 还原, 别影响后面的媒体断言
+       await vm.$nextTick();
+       return { preview, frame, camBack: vm.camOn };
+     })()`,
+  );
+  await cdp.send('Emulation.clearDeviceMetricsOverride', {}, pages[0].sessionId);
+  if (wide.camBack && wide.frame > 300 && wide.frame >= wide.preview * 0.95) {
+    console.log(`宽屏 + 摄像头关着: 预览 ${wide.frame}px (容器 ${wide.preview}px), 没塌`);
+  } else {
+    failed = true;
+    console.error(`宽屏预览回归: ${JSON.stringify(wide)}`);
+  }
+
   if (process.env.E2E_SHOT_LOBBY) {
     await activate(cdp, pages[0].sessionId);
+    if (process.env.E2E_LOBBY_CAMOFF) {
+      // 复现"宽屏 + 摄像头关着"的布局: 关掉媒体, 再看 .preview 的实际尺寸
+      const how = process.env.E2E_LOBBY_CAMOFF === 'toggle' ? 'toggleCam' : 'stopMedia';
+      await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).${how}(); return true; })()`);
+      await sleep(400);
+    }
+    const geo = await evalIn(
+      cdp,
+      pages[0].sessionId,
+      `(() => {
+         const g = (sel) => { const e = document.querySelector(sel); if (!e) return null;
+           const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+           return { w: Math.round(r.width), h: Math.round(r.height), ar: s.aspectRatio, align: s.alignItems }; };
+         return { vw: innerWidth, join: g('.join'), side: g('.join__side'), preview: g('.preview'),
+                  frame: g('.preview__frame'), off: g('.preview__off') };
+       })()`,
+    );
+    console.log('lobby geo:', JSON.stringify(geo));
     const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
     writeFileSync(process.env.E2E_SHOT_LOBBY, Buffer.from(s.data, 'base64'));
     console.log(`截图(大厅): ${process.env.E2E_SHOT_LOBBY}`);

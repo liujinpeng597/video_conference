@@ -406,6 +406,10 @@ button, input { font-family: inherit; }
   grid-template-columns: 1fr;
   gap: 20px;
   align-content: center;   /* 内容不长, 一屏里居中, 不然下面空一大块 */
+  /* 必须显式 width: 100%: margin-inline:auto 会让这个网格项失去 stretch, 变成
+     "按内容收缩"。那样右边的预览列 (1fr) 会塌到内容宽度 —— 摄像头关掉时预览里
+     没有 in-flow 内容 (遮罩是 absolute), 于是预览缩成一小条, 非常丑。 */
+  width: 100%;
   max-width: 1040px;
   margin-inline: auto;
 }
