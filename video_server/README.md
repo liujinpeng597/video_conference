@@ -97,6 +97,7 @@ PostgreSQL 和 Redis 都是每个线程一条连接（`thread_local`，断了自
 |---|---|---|
 | 账号、密码哈希 | PostgreSQL | 耐久事实，必须落盘 |
 | 会话 / 长期令牌 | PostgreSQL | 同上，而且要能被吊销 |
+| **会话校验缓存（60 秒）** | **Redis** | 去掉每请求一次 PG 点查；退出登录同步删除，吊销最多晚 60 秒生效 |
 | **房间里有谁** | **Redis** | 易失事实 + 每个参会者每 0.4-2 秒写一次；落数据库是没必要的写入压力 |
 | **信令收件箱** | **Redis** | 同上，而且消息有时效性 |
 | **全局信令序号** | **Redis** | 多台后端不能各发各的号，否则客户端的 `since` 游标会错乱；取号和入队必须在一个 Lua 脚本里原子完成，不然并发下会丢信令 |
@@ -255,11 +256,12 @@ ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
 - 静态文件交给 nginx 直接发（`./video_client` 挂进去），后端不用管。
 - 挂掉一台实例，另外两台照常服务（实测杀掉一台后连打 30 次请求，30/30 成功）。
 
-**nginx 那个配置里有个坑，值得单独说：** `upstream` 不能写死。
-`docker compose --scale app=3` 时服务名 `app` 会解析出多个 IP，但 nginx 只在启动时
-解析一次 upstream 里的名字，结果三台只会用到一台。所以 `nginx/nginx.conf` 里用的是
-**变量 + resolver** 的写法，靠 Docker 内置 DNS（127.0.0.11）按周期重新解析，实例增减
-和挂掉都能跟上。
+**nginx 那个配置里有个坑，值得单独说：** upstream 里的名字默认只在启动时解析一次。
+`docker compose --scale app=3` 时服务名 `app` 会解析出多个 IP，但老写法只在启动时
+解析一遍，结果三台只会用到一台。所以 `nginx/nginx.conf` 里用的是 nginx **1.27.3+** 的
+`upstream` + `server app:9000 resolve;`：按 Docker 内置 DNS（127.0.0.11）的周期重新
+解析，实例增减和挂掉都能跟上，同时 `keepalive` 复用后端连接。旧版本 nginx 不支持
+upstream 里的 `resolve`（要么升级，要么退回"变量 + resolver"的写法，代价是每请求新建连接）。
 
 还有一句实话：**nginx 开源版没有主动健康检查**，那是 NGINX Plus 的功能。现在靠
 "DNS 摘除 + `proxy_next_upstream` 重试"近似。要做到真正的健康检查和优雅摘流，

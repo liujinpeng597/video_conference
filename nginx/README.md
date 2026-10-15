@@ -11,6 +11,27 @@
 (`auth-endpoints.conf`) 三个片段被两个配置共同引用, 改行为只需要改一处。
 不用一个文件堆 `if`: nginx 的 http 块里没法写条件, 双文件 + 共享片段最直白。
 
+## 反代: upstream + keepalive (要求 nginx ≥ 1.27.3)
+
+`proxy-api.conf` 不写死后端地址, 而是转发给上游组 `app_backend`
+(定义在两个 `nginx*.conf` 的 `http` 块里, 两处保持一致):
+
+```nginx
+upstream app_backend {
+    zone app_backend 64k;
+    server app:9000 resolve;   # 按 resolver 周期重新解析 Docker DNS
+    keepalive 32;              # 复用后端连接
+}
+```
+
+- `resolve` (nginx **1.27.3+**) 让实例增减、换 IP、某台挂掉都能跟上, 不用改配置重启;
+  **更老的 nginx 不支持 upstream 里的 `resolve`** —— 要么升级, 要么退回
+  "变量 + resolver" 的老写法 (`set $backend "http://app:9000"; proxy_pass $backend;`),
+  代价是每个请求新建一条到后端的连接 (压测里这是 nginx 侧 CPU 的大头)。
+- `keepalive` 复用后端连接 (`proxy_http_version 1.1` + 清空 `Connection` 头是前提,
+  都已经在 `proxy-api.conf` 里)。
+- 健康检查仍是 "DNS 摘除 + `proxy_next_upstream` 重试" 近似, 见仓库根目录 README 的说明。
+
 ## HTTPS 怎么开
 
 ```bash

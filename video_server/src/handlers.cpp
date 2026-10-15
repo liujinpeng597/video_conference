@@ -4,6 +4,7 @@
 //
 // 状态放在哪:
 //   账号和会话       -> PostgreSQL (db.* / auth.*)
+//   会话校验缓存      -> Redis      (60 秒 TTL, 见 requireAuth)
 //   房间在线 + 信令   -> Redis      (presence.*)
 //   这个进程自己      -> 什么都不存
 //
@@ -302,12 +303,35 @@ Resp errText(int code, const std::string& msg) {
 }
 
 // ------------------------------------------------------------------ 鉴权
-// 会话令牌每次请求都要查一次库。查得动就说明令牌有效、没过期, 顺手也确认了库还活着。
+// 令牌校验结果缓存在 Redis, TTL 60 秒: 命中就直接放行, 每请求省一次 PG 点查
+// (压测里 PG 点是整套链路最大的 CPU 头, 见 ops/loadtest/README.md 的瓶颈分析)。
+//
+// key 直接用令牌本体: 令牌是 64 位十六进制随机串, Redis 只在内网(回环),
+// 信任域和 PG 相同, 不必再哈希一层。
+//
+// 代价: 吊销最多晚 60 秒生效。正常退出登录会同步删缓存; 残余窗口只有
+// "并发请求刚好在删除前把旧结果回填" 这一种, 上界 60 秒, 接受。
+std::string sessCacheKey(const std::string& token) { return "sess:" + token; }
+
 bool requireAuth(const Request& req, std::string* user, Resp* fail) {
+    // 先问缓存: 命中直接过; 未命中或 Redis 故障都走下面的慢路径
+    // (err 非空 = Redis 故障, 当作没命中, 不能因为缓存把请求打挂)
+    std::string cached;
+    std::string cacheErr;
+    if (redis::get(sessCacheKey(req.token), &cached, &cacheErr) && !cached.empty()) {
+        *user = cached;
+        return true;
+    }
+
+    // 慢路径: 查库 (也只有这里会给出 401 / 500)。失败结果不进缓存。
     std::string err;
     switch (auth::whoAmI(req.token, user, &err)) {
-        case auth::Check::Ok:
+        case auth::Check::Ok: {
+            // 回填缓存, 尽力而为: 写失败只是下次还走慢路径
+            std::string fillErr;
+            redis::setEx(sessCacheKey(req.token), *user, 60, &fillErr);
             return true;
+        }
         case auth::Check::Error:
             logmsg("[api] 查会话失败: %s\n", err.c_str());
             *fail = errJson(500, "服务端查会话失败");
@@ -453,6 +477,11 @@ Resp apiLogout(const Request& req) {
     if (auth::logout(req.token, rememberToken, &err) == auth::Check::Error) {
         logmsg("[api] 退出登录删令牌失败: %s\n", err.c_str());
         return errJson(500, "服务端清理会话失败");
+    }
+    // 令牌已吊销, 缓存副本立刻删掉, 否则最多 60 秒内旧令牌还能通过校验
+    std::string cacheErr;
+    if (!redis::del(sessCacheKey(req.token), &cacheErr)) {
+        logmsg("[api] 退出登录删会话缓存失败: %s\n", cacheErr.c_str());
     }
     return okJson("{\"ok\":true}");
 }

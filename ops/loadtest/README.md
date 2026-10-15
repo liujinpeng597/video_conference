@@ -14,7 +14,8 @@ bash ops/loadtest/run.sh                    # 默认 60 VU / 1 分钟
 VUS=200 DURATION=3m bash ops/loadtest/run.sh
 ```
 
-Windows PowerShell 上没有 bash（本机只有 WSL 占位），直接调容器即可：
+Windows 上在 Git Bash 里可以直接用 `run.sh`（脚本里已处理 MSYS 的路径转换问题）；
+PowerShell 里想直接调容器的话：
 
 ```powershell
 docker run --rm -i --network video_conference_default `
@@ -79,11 +80,30 @@ PostgreSQL 连接数 = 副本数 × 每副本 workers (--workers, 默认 = 核�
 | 2026-10-14 | 同上（8 vCPU / 4GB 的 Docker 虚拟机） | 200 VU / 90s | **186 rps**，p95 1.61ms / p99 3.6ms，0 失败，信令 12030/12030 全投递 |
 | 2026-10-14 | 同上 | 720 VU / 90s | **719 rps**，p95 2.08ms / p99 5.2ms / max 63ms，0 失败，信令 43370/43370 全投递 |
 | 2026-10-14 | 同上 | 950 VU / 60s | **约 950 rps**，p95 2.27ms / max 64ms，0 失败，信令 42980/42980 全投递 |
+| 2026-10-15 | 同上（与下一行同机同日，作对照） | 950 VU / 60s | **635 rps**（全程均值），p95 1.81ms、中位 1.01ms，0 失败；CPU: PG 13.6% / nginx 5.9% / Redis 4.4% |
+| 2026-10-15 | 同上（令牌缓存 + keepalive 之后） | 950 VU / 60s | **634 rps**（同节奏同负载），p95 **1.11ms**、中位 **0.54ms**、max 69ms，0 失败；CPU: PG **2.6%** / Redis 11.1% |
 
 > rps 口径：k6 汇总里的 `http_reqs.rate` 是全窗口平均（把 setup 和升/降档也算进去，
 > 会偏低）；表里的 rps 是**稳态值**，用 nginx 访问日志的 20 秒窗口数出来的。
 
-## 瓶颈在哪一跳（2026-10-14 实测）
+## 优化记录（2026-10-15）
+
+同机同日、同配置（950 VU / 60s）的对照：
+
+| 指标 | 优化前 | 优化后 | 说明 |
+|---|---|---|---|
+| 请求 p95 | 1.81ms | **1.11ms**（-39%） | 缓存命中省掉一次 PG 点查的往返 |
+| 请求中位 | 1.01ms | **0.54ms**（-47%） | |
+| PostgreSQL CPU | 13.6% | **2.6%**（-81%） | 令牌校验缓存进 Redis —— 把"最大 CPU 头"摘掉 |
+| Redis CPU | 4.4% | 11.1% | 缓存带来的新负载；放它身上是因为它原本最闲 |
+| nginx → app 新建连接 | 旧写法：每请求一条 | **78,601 请求只新建 221 条** | `upstream + resolve + keepalive`（≥1.27.3） |
+| 失败率 | 0 | 0 | 两轮都 0 |
+
+请求速率两轮持平（≈634 rps）是设计使然：负载由 VU 的 2 秒轮询节奏驱动、不是压极限，
+优化体现为**延迟下降与 CPU 余量**（PG 让出来的余量直接换成更大的安全边际）。
+再要提吞吐，按下面"瓶颈排序"③ 走。
+
+## 瓶颈在哪一跳（2026-10-14，优化前实测）
 
 在 950 VU（约 950 rps）的稳态窗口里采 `docker stats`，并用 `redis-cli info commandstats`
 取压测前后的差值：
@@ -98,9 +118,9 @@ PostgreSQL 连接数 = 副本数 × 每副本 workers (--workers, 默认 = 核�
 
 - 每 100 rps 整套约 0.12~0.15 核：**950 rps 只用了不到 1/7 的 CPU**，单机容量远没到拐点。
 - 所以"能撑多少并发"在这个规模不由 CPU 决定，先撞到的是 PG 点查的延迟预算与连接数上限（公式见上一节）。
-- 真要再上一个量级，顺序是：① 把令牌校验结果缓存进 Redis（去掉每请求的 PG 点查）→
-  ② nginx 换 `upstream` + `keepalive`（代价是失去 DNS 动态跟随，取舍见 `nginx/README.md`）→
-  ③ 才轮到 Redis / 多机。
+- 真要再上一个量级：① ✅ 令牌校验缓存进 Redis、② ✅ nginx `upstream` + `resolve` + `keepalive`
+  （DNS 动态跟随保住了，要求 nginx ≥1.27.3）都已在 2026-10-15 落地，前后对比见上「优化记录」；
+  ③ 再往上才轮到 Redis / 多机（本项目规模远未到）。
 - 本机是 Windows + Docker Desktop，syscall 开销高于原生 Linux；绝对数字以 VPS 复测为准
   （命令完全一样，只要把 `run.sh` / `docker run` 里的网络名换成 VPS 上的）。
 

@@ -13,6 +13,17 @@ cd "$(dirname "$0")/../.." # 仓库根目录
 NETWORK="${NETWORK:-video_conference_default}"
 K6_IMAGE="${K6_IMAGE:-docker.m.daocloud.io/grafana/k6:latest}"
 
+# Git Bash (MSYS) 会把容器里的 "/scripts/..." 参数错误地转换成 Windows 路径,
+# 结果是 k6 在 C:\GitHub\Git\scripts 找脚本。把宿主目录转成 Windows 形式并关闭
+# 参数转换, 两边路径就都对了; Linux / CI 下这两步是空操作。
+SCRIPTS_DIR="$PWD/ops/loadtest"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        SCRIPTS_DIR=$(cygpath -w "$SCRIPTS_DIR")
+        export MSYS2_ARG_CONV_EXCL='*'
+        ;;
+esac
+
 if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
     echo "找不到网络 $NETWORK —— 先把栈起来: docker compose up -d" >&2
     exit 1
@@ -21,7 +32,7 @@ fi
 mkdir -p ops/loadtest/out
 
 docker run --rm -i --network "$NETWORK" \
-    -v "$PWD/ops/loadtest:/scripts" \
+    -v "${SCRIPTS_DIR}:/scripts" \
     -e VUS="${VUS:-60}" \
     -e DURATION="${DURATION:-60s}" \
     -e RAMP_UP="${RAMP_UP:-15s}" \
