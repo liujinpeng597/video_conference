@@ -31,6 +31,7 @@
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
   const HEALTH_MS = 5000;      // 服务端没响应时的重试间隔
+  const SESSION_CHECK_MS = 5000;  // 大厅里多久验一次"这个会话还有效吗"
 
   // -------------------------------------------------------------- 对端连接表
   // 故意放在组件外面, 而且不是响应式的: RTCPeerConnection / MediaStream
@@ -135,6 +136,7 @@
         syncTimer: 0,
         clockTimer: 0,
         healthTimer: 0,
+        sessTimer: 0,
         copyTimer: 0,
       };
     },
@@ -289,6 +291,23 @@
       goLobby() {
         this.view = 'lobby';
         this.startMedia();
+        // 大厅不发别的请求, 所以定时确认会话还有效: 被别处登录挤下线的那台会自己回登录页,
+        // 而不是一直"看起来还登着", 直到点了什么才发现。
+        this.checkSession();
+      },
+
+      checkSession() {
+        clearTimeout(this.sessTimer);
+        if (this.view !== 'lobby') return;
+        this.authed('GET', '/api/me').then(() => {
+          this.sessTimer = setTimeout(this.checkSession, SESSION_CHECK_MS);
+        }).catch((err) => {
+          if (err.dead) {
+            this.sessionDead();
+            return;
+          }
+          this.sessTimer = setTimeout(this.checkSession, SESSION_CHECK_MS);  // 网络抖了, 下一拍再试
+        });
       },
 
       // 回到登录页。顺便把标签切回"登录": 上次可能停在"注册"上,
@@ -639,9 +658,11 @@
         clearTimeout(this.syncTimer);
         clearInterval(this.clockTimer);
         clearTimeout(this.noticeTimer);
+        clearTimeout(this.sessTimer);
         this.syncTimer = 0;
         this.clockTimer = 0;
         this.noticeTimer = 0;
+        this.sessTimer = 0;
       },
 
       scheduleSync(delay) {

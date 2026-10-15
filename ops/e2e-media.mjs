@@ -284,6 +284,46 @@ try {
     console.error(`宽屏预览回归: ${JSON.stringify(wide)}`);
   }
 
+  // 回归: 大厅里的会话心跳 —— 账号在别处登录后, 停在大厅的那个标签页要自己回登录页。
+  // 用一个额外的临时标签页 (不进 pages), 免得把后面房间阶段的三个标签页搞乱。
+  {
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    await cdp.send('Runtime.enable', {}, sessionId);
+    await cdp.send('Page.enable', {}, sessionId);
+    const u = await registerUser(`e2eb${SUFFIX}`);
+    await cdp.send('Page.navigate', { url: `${BASE}/` }, sessionId);
+    await waitIn(cdp, sessionId, `document.readyState === 'complete' && !!document.querySelector('#app')`,
+                 20000, '大厅心跳标签页加载');
+    await evalIn(cdp, sessionId,
+      `sessionStorage.setItem('tp_token', ${JSON.stringify(u.token)});
+       sessionStorage.setItem('tp_user', ${JSON.stringify(u.user)}); 'ok'`);
+    await cdp.send('Page.reload', {}, sessionId);
+    await activate(cdp, sessionId);
+    await waitIn(cdp, sessionId, `(() => { const vm = ${VM}; return !!vm && vm.view === 'lobby'; })()`,
+                 20000, '大厅心跳标签页进入大厅');
+
+    const relogin = await fetch(`${BASE}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u.user, password: 'e2e-pass-123' }),
+    });
+    let bounced = null;
+    for (let i = 0; i < 24; i++) {   // 心跳 5 秒一次, 给足两个周期
+      await activate(cdp, sessionId);
+      bounced = await evalIn(cdp, sessionId, `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`);
+      if (bounced.view === 'auth') break;
+      await sleep(500);
+    }
+    if (relogin.ok && bounced && bounced.view === 'auth' && /登录/.test(bounced.err)) {
+      console.log(`大厅心跳: 被顶掉的标签页从大厅自动回到登录页 (提示: ${bounced.err})`);
+    } else {
+      failed = true;
+      console.error(`大厅心跳断言失败: ${JSON.stringify({ ok: relogin.ok, bounced })}`);
+    }
+    await cdp.send('Target.closeTarget', { targetId });
+  }
+
   if (process.env.E2E_SHOT_LOBBY) {
     await activate(cdp, pages[0].sessionId);
     if (process.env.E2E_LOBBY_CAMOFF) {
