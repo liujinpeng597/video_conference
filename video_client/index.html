@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=10">
+<link rel="stylesheet" href="app.css?v=11">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -227,6 +227,8 @@
               <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
             </button>
             <p class="tile__tag">{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
+            <span class="tile__q" :class="peerStats[p.id] ? 'tile__q--' + peerStats[p.id].q : ''"
+                  v-if="qText(p.id)" :title="qTitle(p.id)">{{ qText(p.id) }}</span>
           </article>
         </div>
 
@@ -416,7 +418,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="vendor/vue.global.prod.js?v=11"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

@@ -450,6 +450,29 @@ try {
   console.log(`三个标签页合计发出 ${totalOut} 字节`);
   if (totalOut <= 0) failed = true;
 
+  // 通话质量指示: getStats 采出来的码率应该 > 0 (说明采样链路真的在工作)
+  let qSeen = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[0].sessionId);
+    qSeen = await evalIn(
+      cdp,
+      pages[0].sessionId,
+      `(() => {
+         const s = (${VM})?.peerStats || {};
+         const ks = Object.values(s).filter((x) => x.inKbps > 0);
+         return { total: Object.keys(s).length, withRate: ks.length, sample: ks[0] ? { ...ks[0] } : null };
+       })()`,
+    );
+    if (qSeen.withRate >= 2) break;
+    await sleep(600);
+  }
+  if (qSeen && qSeen.withRate >= 2) {
+    console.log(`通话质量: ${qSeen.withRate} 路有码率 (例: ${JSON.stringify(qSeen.sample)})`);
+  } else {
+    failed = true;
+    console.error(`通话质量断言失败: ${JSON.stringify(qSeen)}`);
+  }
+
   // 阶段 2: 屏幕共享 —— 无头里起不起得来取决浏览器, 起不来就跳过 (不判失败);
   // 起来了就断言: 连接不断、tab0 继续发、另外两页继续在收, 停止后能切回且不断线。
   await activate(cdp, pages[0].sessionId);

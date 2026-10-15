@@ -42,6 +42,7 @@
   const peerMissing = new Map();   // pid -> 连续几拍不在名单里 (连续两拍才拆连接)
   const peerRebuilds = new Map();  // pid -> 看门狗已重建次数 (连上清零, 上限 3 次)
   let reactionSeq = 0;             // 表情浮动体的自增 key
+  const statsPrev = new Map();     // pid -> 上一次 getStats 的累计值 (算码率/丢包率要用增量)
   // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
   let shareStream = null;          // 正在共享的 getDisplayMedia 流
   let wakeLock = null;             // 屏幕常亮锁 (手机端尽量别锁屏)
@@ -110,6 +111,8 @@
         peerHasVideo: {},   // pid -> 有没有收到画面
         audioBlocked: false,
 
+        // 通话质量 (每 2 秒从 getStats 采样一次): pid -> { inKbps, outKbps, lossPct, jitterMs, rttMs, q }
+        peerStats: {},
         // 聊天: 服务端只留最近 50 条, 客户端内存里最多留 200 条
         chatOpen: false,
         chatMessages: [],   // [{ id, from, name, text }]
@@ -137,6 +140,7 @@
         clockTimer: 0,
         healthTimer: 0,
         sessTimer: 0,
+        statsTimer: 0,
         copyTimer: 0,
       };
     },
@@ -490,6 +494,7 @@
           this.roomInput = '';
           this.scheduleSync(0);
           this.clockTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
+          this.statsTimer = setInterval(this.sampleStats, 2000);   // 通话质量采样
           this.syncCalls();
           this.publishMic();   // 把"我现在是开麦还是静音"报给服务端, 名单里才准
         } catch (err) {
@@ -655,14 +660,74 @@
         }
       },
 
+      // --------------------------------------------------------- 通话质量
+      // 每 2 秒从每条 PeerConnection 的 getStats 采样, 算"收/发码率 + 丢包率 + 抖动 + 往返"。
+      // 速率用"这次累计值 - 上次累计值"除以时间差 —— 标准做法。浏览器自己也在做拥塞控制,
+      // 这里只是把它的结果读出来给用户看。
+      async sampleStats() {
+        for (const [pid, state] of calls) {
+          if (!state.pc || state.pc.connectionState === 'closed') continue;
+          let rep = null;
+          try {
+            rep = await state.pc.getStats();
+          } catch (err) {
+            continue;
+          }
+          let inBytes = 0, outBytes = 0, lost = 0, recv = 0, jitter = 0, rtt = 0;
+          rep.forEach((r) => {
+            if (r.type === 'inbound-rtp' && !r.isRemote) {
+              inBytes += r.bytesReceived || 0;
+              lost += r.packetsLost || 0;
+              recv += r.packetsReceived || 0;
+              if (typeof r.jitter === 'number') jitter = Math.max(jitter, r.jitter);
+            } else if (r.type === 'outbound-rtp' && !r.isRemote) {
+              outBytes += r.bytesSent || 0;
+            } else if (r.type === 'candidate-pair' && r.state === 'succeeded') {
+              if (typeof r.currentRoundTripTime === 'number') rtt = Math.max(rtt, r.currentRoundTripTime);
+            }
+          });
+          const t = performance.now();
+          const prev = statsPrev.get(pid);
+          statsPrev.set(pid, { t, inBytes, outBytes, lost, recv });
+          if (!prev) continue;                       // 第一拍只记基线
+          const dt = (t - prev.t) / 1000;
+          if (dt < 0.2) continue;
+          const inKbps = Math.max(0, ((inBytes - prev.inBytes) * 8) / dt / 1000);
+          const outKbps = Math.max(0, ((outBytes - prev.outBytes) * 8) / dt / 1000);
+          const dLost = Math.max(0, lost - prev.lost);
+          const dRecv = Math.max(0, recv - prev.recv);
+          const total = dLost + dRecv;
+          const lossPct = total > 0 ? (dLost / total) * 100 : 0;
+          const q = (lossPct < 1 && rtt < 0.15) ? 'good' : (lossPct < 5 && rtt < 0.3) ? 'fair' : 'poor';
+          this.peerStats[pid] = {
+            inKbps: Math.round(inKbps), outKbps: Math.round(outKbps),
+            lossPct: Math.round(lossPct * 10) / 10,
+            jitterMs: Math.round(jitter * 1000), rttMs: Math.round(rtt * 1000), q,
+          };
+        }
+      },
+      qText(pid) {
+        const s = this.peerStats[pid];
+        if (!s || s.inKbps <= 0) return '';
+        return (s.inKbps >= 1000 ? (s.inKbps / 1000).toFixed(1) + 'M' : s.inKbps + 'k') +
+               ' · ' + s.lossPct + '%';
+      },
+      qTitle(pid) {
+        const s = this.peerStats[pid];
+        if (!s) return '';
+        return `收 ${s.inKbps} kbps / 发 ${s.outKbps} kbps · 丢包 ${s.lossPct}% · 抖动 ${s.jitterMs}ms · 往返 ${s.rttMs}ms`;
+      },
+
       // ------------------------------------------------------- 轮询 / 同步
       stopTimers() {
         clearTimeout(this.syncTimer);
         clearInterval(this.clockTimer);
+        clearInterval(this.statsTimer);
         clearTimeout(this.noticeTimer);
         clearTimeout(this.sessTimer);
         this.syncTimer = 0;
         this.clockTimer = 0;
+        this.statsTimer = 0;
         this.noticeTimer = 0;
         this.sessTimer = 0;
       },
@@ -978,6 +1043,8 @@
         for (const pid of [...calls.keys()]) this.closeCall(pid);
         peerMissing.clear();
         peerRebuilds.clear();
+        statsPrev.clear();
+        this.peerStats = {};
         this.audioBlocked = false;
       },
 

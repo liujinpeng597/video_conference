@@ -874,6 +874,33 @@ button, input { font-family: inherit; }
   font-size: 11px;
 }
 
+/* 通话质量: 贴在视频块右下角 (避开右上角举手标志、左上角移出按钮、左下角名字)
+   圆点颜色 = 好 / 一般 / 差; 数字鼠标悬浮有 title 里的明细 */
+.tile__q {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  background: rgb(0 0 0 / .62);
+  color: var(--on-video);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.tile__q::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: var(--r-full);
+  background: var(--on-video-2);
+  vertical-align: middle;
+}
+.tile__q--good::before { background: var(--success); }
+.tile__q--fair::before { background: #f0a020; }
+.tile__q--poor::before { background: var(--danger); }
+
 /* 主持人才能看到的"移出"按钮 (放左上角, 避开右上角的举手标志) */
 .tile__kick {
   position: absolute;
