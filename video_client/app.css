@@ -461,7 +461,6 @@ button, input { font-family: inherit; }
   height: 100%;
   display: block;
   object-fit: cover;
-  transform: scaleX(-1);   /* 自拍镜像, 和照镜子一致 */
 }
 .preview__off {
   position: absolute;
@@ -527,10 +526,8 @@ button, input { font-family: inherit; }
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1);   /* 只有自己的画面镜像; 别人的必须是正着的 */
   background: var(--video);
 }
-.tile__video--remote { transform: none; }
 .tile__off {
   position: absolute;
   inset: 0;

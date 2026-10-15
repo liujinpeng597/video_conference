@@ -299,6 +299,26 @@ try {
     );
   }
 
+  // 画面方向: 不能是镜像的 —— 自己的那格也用来放"共享屏幕", 一旦镜像, 共享出去的
+  // 文字就全反了。这里锁死"没有任何 video 带 scaleX(-1)"。
+  await activate(cdp, pages[0].sessionId);
+  const dirs = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `(() => {
+       const self = document.querySelector('.tile__video:not(.tile__video--remote)');
+       const remote = document.querySelector('.tile__video--remote');
+       return { self: self ? getComputedStyle(self).transform : '?',
+                remote: remote ? getComputedStyle(remote).transform : '?' };
+     })()`,
+  );
+  if (dirs.self === 'none' && dirs.remote === 'none') {
+    console.log('画面方向: 自己与远端都不是镜像');
+  } else {
+    failed = true;
+    console.error(`画面方向断言失败 (不该有镜像): ${JSON.stringify(dirs)}`);
+  }
+
   // 汇总每个标签页的收 / 发 RTP 字节
   const statsExpr = `(async () => {
     const vids = [...document.querySelectorAll('video.tile__video--remote')];
