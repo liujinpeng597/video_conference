@@ -409,6 +409,63 @@ try {
     }
   }
 
+  // 可选诊断 (E2E_PROBE=1): 统计视频元素被重建 / srcObject 被重设 / play() 被调的次数。
+  // 画面"一闪一闪"基本就是这几个在轮询里反复发生 —— 用数字定位, 别靠猜。
+  const PROBE_INSTALL = `(() => {
+    window.__probe = window.__probe || { added: 0, removed: 0, plays: 0, srcSets: 0, byClass: {} };
+    const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
+    if (d && d.set && !HTMLMediaElement.prototype.__probed) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
+        configurable: true, get: d.get,
+        set(v) {
+          window.__probe.srcSets++;
+          const k = (this.className || this.tagName);
+          window.__probe.byClass[k] = (window.__probe.byClass[k] || 0) + 1;
+          d.set.call(this, v);
+        },
+      });
+      HTMLMediaElement.prototype.__probed = true;
+    }
+    const P = HTMLMediaElement.prototype.play;
+    if (!P.__probed) {
+      const wrap = function () { window.__probe.plays++; return P.apply(this, arguments); };
+      wrap.__probed = true;
+      HTMLMediaElement.prototype.play = wrap;
+    }
+    if (!window.__probeObs) {
+      for (const t of ['loadstart', 'emptied', 'loadeddata', 'playing', 'waiting']) {
+        document.addEventListener(t, (e) => {
+          if (e.target && e.target.nodeName === 'VIDEO') {
+            window.__probe.events = window.__probe.events || {};
+            const k = t + ':' + (e.target.className || '');
+            window.__probe.events[k] = (window.__probe.events[k] || 0) + 1;
+          }
+        }, true);
+      }
+      window.__probeObs = new MutationObserver((muts) => {
+        for (const m of muts) {
+          for (const n of m.addedNodes) if (n.nodeName === 'VIDEO') window.__probe.added++;
+          for (const n of m.removedNodes) if (n.nodeName === 'VIDEO') window.__probe.removed++;
+        }
+      });
+      window.__probeObs.observe(document.querySelector('#app'), { childList: true, subtree: true });
+    }
+    return true;
+  })()`;
+  if (process.env.E2E_PROBE) {
+    for (const pg of pages) {
+      await activate(cdp, pg.sessionId);
+      await evalIn(cdp, pg.sessionId, PROBE_INSTALL);
+    }
+    console.log('probe: 已装统计器');
+    await sleep(6000);  // 静默 6 秒 (只有轮询, 没有任何操作), 量稳态速率
+    for (let i = 0; i < pages.length; i++) {
+      await activate(cdp, pages[i].sessionId);
+      const p = await evalIn(cdp, pages[i].sessionId, `JSON.stringify(window.__probe)`);
+      console.log(`probe 稳态6s tab${i}: ${p}`);
+    }
+  }
+
   // 阶段 3: 房间聊天 —— 写走 POST /api/rooms/chat, 读搭 /api/rooms/state 的 chat 字段同一拍带回。
   // 断言: tab0 发出的是自己那条; tab1 收到; tab1 面板关着时未读 +1;
   // 而且用户文本按纯文本渲染 (HTML 被转义) —— 聊天是最脏的用户输入, 这条最重要。
@@ -564,6 +621,14 @@ try {
   }
 
   // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
+  if (process.env.E2E_PROBE) {
+    for (let i = 0; i < pages.length; i++) {
+      await activate(cdp, pages[i].sessionId);
+      const p = await evalIn(cdp, pages[i].sessionId, `JSON.stringify(window.__probe)`);
+      console.log(`probe tab${i}: ${p}`);
+    }
+  }
+
   if (process.env.E2E_SHOT) {
     const tab = Math.min(pages.length - 1, Math.max(0, Number(process.env.E2E_SHOT_TAB ?? 1)));
     await activate(cdp, pages[tab].sessionId);

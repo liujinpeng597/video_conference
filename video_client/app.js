@@ -203,7 +203,10 @@
       // 自己的预览。视频元素会因为切视图被换掉, 所以用函数 ref。
       bindVideo(el) {
         this.videoEl = el;
-        if (el) el.srcObject = this.media.stream;
+        // 只在"真的换了流"时才赋值: srcObject 一赋值就会触发 <video> 的加载算法
+        // (emptied -> loadstart -> loadeddata), 画面会黑一下再回来。这个函数 ref 在每次
+        // 重渲染时都会被调用 (计时器每秒一次 + 每拍轮询), 不加这个判断就是每秒闪一下。
+        if (el && el.srcObject !== this.media.stream) el.srcObject = this.media.stream;
       },
 
       // 远端画面同理, 但要按 pid 分开管
@@ -221,10 +224,14 @@
         const call2 = calls.get(pid);
         if (!el || !call2 || !call2.stream) return;
         if (el.srcObject !== call2.stream) el.srcObject = call2.stream;
-        const p = el.play();
-        if (p && p.catch) {
-          // 浏览器不给自动播放带声音的流 (还没发生过用户交互), 让用户点一下
-          p.catch(() => { this.audioBlocked = true; });
+        // 这个函数由内联 ref 在每次重渲染时调用, 别每次都对已在播的元素 play()
+        // (空转的 promise 没意义, 还会把 audioBlocked 误判出来)
+        if (el.paused) {
+          const p = el.play();
+          if (p && p.catch) {
+            // 浏览器不给自动播放带声音的流 (还没发生过用户交互), 让用户点一下
+            p.catch(() => { this.audioBlocked = true; });
+          }
         }
       },
 
