@@ -262,7 +262,7 @@ try {
   await waitIn(cdp, pages[0].sessionId,
                `!!document.querySelector('#f-nick') && !!document.querySelector('#f-op')`,
                10000, '切到个人中心 (昵称 + 修改密码都在)');
-  const tabs = await evalIn(cdp, pages[0].sessionId, `document.querySelectorAll('.nav__btn').length`);
+  const tabs = await evalIn(cdp, pages[0].sessionId, `document.querySelectorAll('.rail__btn').length`);
   if (process.env.E2E_SHOT_PROFILE) {
     await sleep(400);
     const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
@@ -271,8 +271,8 @@ try {
   }
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goHome(); return true; })()`);
   await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.preview')`, 10000, '切回会议首页');
-  if (tabs === 2) console.log('三个界面: 个人中心有昵称 + 修改密码, 顶栏两个 tab, 能切回会议页');
-  else { failed = true; console.error(`顶栏 tab 数不对: ${tabs}`); }
+  if (tabs === 2) console.log('三个界面: 个人中心有昵称 + 修改密码, 左侧栏两个入口, 能切回会议页');
+  else { failed = true; console.error(`左侧栏入口数不对: ${tabs}`); }
 
   // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经 .join 用 margin-inline:auto
   // 变成"按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
@@ -297,7 +297,8 @@ try {
      })()`,
   );
   await cdp.send('Emulation.clearDeviceMetricsOverride', {}, pages[0].sessionId);
-  if (wide.camBack && wide.frame > 300 && wide.frame >= wide.preview * 0.95) {
+  // 不变量是"预览帧铺满它那一列" (塌成一小条时 frame 会远小于 preview), 不是某个绝对像素
+  if (wide.camBack && wide.frame > 200 && wide.frame >= wide.preview * 0.95) {
     console.log(`宽屏 + 摄像头关着: 预览 ${wide.frame}px (容器 ${wide.preview}px), 没塌`);
   } else {
     failed = true;

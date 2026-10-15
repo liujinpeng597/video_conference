@@ -17,6 +17,7 @@ const ICONS = [
   'microphone', 'microphone-off', 'phone-off', 'refresh', 'screen-share', 'screen-share-off',
   'user', 'video', 'video-off',
   'message', 'send', 'x', 'hand-stop', 'mood-smile', 'user-off', 'photo',
+  'plus', 'bolt', 'chevron-right', 'calendar',
 ];
 
 const SYMBOL_ATTRS =

@@ -96,7 +96,6 @@
         busy: false,
         showPass: false,
         booting: true,
-        pwOpen: false,      // 大厅里"修改密码"表单是否展开
         pw: { old: '', next: '', confirm: '', error: '', done: false },
         displayName: '',    // 昵称 (房间列表里显示这个)
         avatarSrc: '',      // 头像 (data URL)
@@ -104,6 +103,9 @@
         nickSaved: false,
         profErr: '',
         history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
+        showAllHistory: false,
+        todayDay: '',
+        todayWeek: '',
 
         token: '',
         user: '',
@@ -182,6 +184,8 @@
         const me = this.participants.find((p) => p.me);
         return (me && me.name) || this.whoName;
       },
+      // 最近会议默认只露 3 条, 点"全部会议"展开
+      shownHistory() { return this.showAllHistory ? this.history : this.history.slice(0, 3); },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -343,12 +347,29 @@
       // ------------------------------------------------ 登录状态 (两层令牌)
       goHome() {
         this.view = 'home';
+        const d = new Date();
+        const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+        this.todayDay = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+        this.todayWeek = wk;
         this.startMedia();
         // 大厅不发别的请求, 所以定时确认会话还有效: 被别处登录挤下线的那台会自己回登录页,
         // 而不是一直"看起来还登着", 直到点了什么才发现。
         this.checkSession();
         this.loadHistory();   // 大厅里顺便把"最近会议"拉一份
         this.loadMe();        // 昵称 / 头像
+      },
+
+      // "加入会议"那个大按钮: 把焦点送到房间号输入框
+      focusJoin() {
+        const el = this.$refs.roomInput;
+        if (!el) return;
+        el.focus();
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      },
+      // 最近会议里的"进入": 填上房间号直接进
+      rejoin(code) {
+        this.roomInput = code;
+        this.joinRoom();
       },
 
       // 个人中心: 进这一屏就把摄像头关掉 (不用一直亮着), 回会议页会自动重开
