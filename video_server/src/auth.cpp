@@ -326,4 +326,64 @@ Check logout(const std::string& token, const std::string& rememberToken, std::st
     return Check::Ok;
 }
 
+Result changePassword(const std::string& token, const std::string& oldPassword,
+                      const std::string& newPassword) {
+    Result r;
+    std::string username;
+    std::string err;
+    switch (whoAmI(token, &username, &err)) {
+        case Check::Ok:
+            break;
+        case Check::Error:
+            r.status = Status::Error;
+            r.error = "查会话失败：" + err;
+            return r;
+        default:
+            r.status = Status::BadCreds;
+            r.error = "登录状态失效了，重新登录一下";
+            return r;
+    }
+
+    db::User user;
+    if (!db::findUser(username, &user, &err)) {
+        r.status = err.empty() ? Status::BadCreds : Status::Error;
+        r.error = err.empty() ? "账号不存在" : "查账号失败：" + err;
+        return r;
+    }
+    if (!verifyPassword(user.passwordHash, oldPassword)) {
+        r.status = Status::BadCreds;
+        r.error = "原密码不对";
+        return r;
+    }
+    std::string why;
+    if (!validPass(newPassword, &why)) {
+        r.status = Status::BadRequest;
+        r.error = why;
+        return r;
+    }
+    if (newPassword == oldPassword) {
+        r.status = Status::BadRequest;
+        r.error = "新密码和原密码不能一样";
+        return r;
+    }
+    std::string hash;
+    if (!hashPassword(newPassword, &hash)) {
+        r.status = Status::Error;
+        r.error = "算密码哈希失败";
+        return r;
+    }
+    if (!db::updatePassword(user.id, hash, &err)) {
+        r.status = Status::Error;
+        r.error = "写新密码失败：" + err;
+        return r;
+    }
+    // 改完密码把其它令牌都吊销 (只留当前这枚会话): 别的地方就得重新登录
+    std::string tokenErr;
+    db::deleteUserTokens(user.id, sha256Hex(token), &tokenErr);
+
+    r.status = Status::Ok;
+    r.username = user.username;
+    return r;
+}
+
 }  // namespace auth

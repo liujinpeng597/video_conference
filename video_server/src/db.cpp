@@ -260,6 +260,15 @@ bool deleteUserTokens(long long userId, const std::string& keepHash, std::string
     return true;
 }
 
+bool updatePassword(long long userId, const std::string& hash, std::string* err) {
+    err->clear();
+    PGresult* r = query(err, "UPDATE users SET password_hash = $2 WHERE id = $1",
+                        {std::to_string(userId), hash});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
 bool countUsers(long long* out, std::string* err) {
     err->clear();
     PGresult* r = query(err, "SELECT count(*) FROM users", {});

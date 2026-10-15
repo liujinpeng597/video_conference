@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=13">
+<link rel="stylesheet" href="app.css?v=14">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -145,6 +145,34 @@
           </div>
 
           <div class="card">
+            <h2 class="card__title">账号</h2>
+            <button class="btn btn--line btn--block" type="button" @click="pwOpen = !pwOpen">
+              {{ pwOpen ? '收起' : '修改密码' }}
+            </button>
+            <form class="form pwform" v-if="pwOpen" novalidate @submit.prevent="changePassword">
+              <div class="field">
+                <label class="field__label" for="f-op">原密码</label>
+                <input id="f-op" class="input" type="password" v-model="pw.old" autocomplete="current-password">
+              </div>
+              <div class="field">
+                <label class="field__label" for="f-np">新密码</label>
+                <input id="f-np" class="input" type="password" v-model="pw.next" autocomplete="new-password">
+                <p class="field__hint">6-64 个字符</p>
+              </div>
+              <div class="field">
+                <label class="field__label" for="f-np2">再输一次新密码</label>
+                <input id="f-np2" class="input" type="password" v-model="pw.confirm" autocomplete="new-password">
+              </div>
+              <p class="formerr" role="alert" v-if="pw.error">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ pw.error }}
+              </p>
+              <p class="field__hint" v-if="pw.done">密码已改；其它设备已经退出登录。</p>
+              <button class="btn btn--primary btn--block" type="submit" :disabled="busy">确认修改</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h2 class="card__title">设备</h2>
             <div class="devrow">
               <button class="devbtn" type="button" @click="toggleMic"
                       :disabled="!media.stream" :aria-pressed="micOn">
@@ -432,7 +460,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script src="vendor/vue.global.prod.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

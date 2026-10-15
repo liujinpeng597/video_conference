@@ -96,6 +96,8 @@
         busy: false,
         showPass: false,
         booting: true,
+        pwOpen: false,      // 大厅里"修改密码"表单是否展开
+        pw: { old: '', next: '', confirm: '', error: '', done: false },
 
         token: '',
         user: '',
@@ -423,6 +425,31 @@
       switchMode(m) {
         this.mode = m;
         this.errors = {};
+      },
+
+      // 改密码: 成功以后服务端会把其它令牌都吊销 (只留当前会话), 别处得重新登录
+      async changePassword() {
+        this.pw.error = '';
+        this.pw.done = false;
+        if (!this.pw.old || !this.pw.next) {
+          this.pw.error = '原密码和新密码都要填';
+          return;
+        }
+        if (this.pw.next !== this.pw.confirm) {
+          this.pw.error = '两次输入的新密码不一样';
+          return;
+        }
+        this.busy = true;
+        try {
+          await this.authed('POST', '/api/password',
+                            { old_password: this.pw.old, new_password: this.pw.next });
+          this.pw = { old: '', next: '', confirm: '', error: '', done: true };
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.pw.error = err.message || '修改失败';
+        } finally {
+          this.busy = false;
+        }
       },
 
       async submitAuth() {

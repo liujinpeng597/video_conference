@@ -720,6 +720,32 @@ check "主持人走后角色交给剩下的人" "$KPID3" "$(jstr host)"
 call POST /api/rooms/leave '{}' "$TOKEN_K3"
 
 echo
+echo "---- 修改密码 ----"
+USER_PW="pw$SUF"
+call POST /api/register "{\"username\":\"$USER_PW\",\"password\":\"hunter2\"}"
+TOKEN_PW=$(jstr token)
+call POST /api/password '{"old_password":"wrong","new_password":"hunter3"}' "$TOKEN_PW"
+check "原密码不对 401" "401" "$(status)"
+call POST /api/password '{"old_password":"hunter2","new_password":"123"}' "$TOKEN_PW"
+check "新密码太短 400" "400" "$(status)"
+call POST /api/password '{"old_password":"hunter2","new_password":"hunter2"}' "$TOKEN_PW"
+check "新旧密码一样 400" "400" "$(status)"
+call POST /api/password '{"old_password":"hunter2","new_password":"hunter3"}' "$TOKEN_PW"
+check "改密码 200" "200" "$(status)"
+call GET /api/me '' "$TOKEN_PW"
+check "改完当前会话还在 200" "200" "$(status)"
+call POST /api/password '{}' "$TOKEN_PW"
+check "缺字段 400" "400" "$(status)"
+call POST /api/password '{"old_password":"hunter3","new_password":"hunter4"}'
+check "未登录改密码 401" "401" "$(status)"
+call POST /api/login "{\"username\":\"$USER_PW\",\"password\":\"hunter2\"}"
+check "旧密码登不进了 401" "401" "$(status)"
+call POST /api/login "{\"username\":\"$USER_PW\",\"password\":\"hunter3\"}"
+check "新密码能登录 200" "200" "$(status)"
+TOKEN_PW=$(jstr token)
+call POST /api/rooms/leave '{}' "$TOKEN_PW"
+
+echo
 echo "---- 会议锁定 ----"
 # 锁上以后新人进不来 (已经在里面的不受影响); 只有主持人能锁 / 解锁。
 USER_LK="lk$SUF"

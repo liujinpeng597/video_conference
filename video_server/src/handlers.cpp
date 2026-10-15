@@ -872,6 +872,30 @@ Resp apiRoomsLock(const Request& req) {
     }
 }
 
+// 改密码。成功以后服务端会把其它令牌都吊销 (只留当前会话), 前端会提示"其它设备已下线"。
+Resp apiPassword(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string oldPass;
+    std::string newPass;
+    if (!json::getString(req.body, "old_password", &oldPass) ||
+        !json::getString(req.body, "new_password", &newPass)) {
+        return errJson(400, "请求体里要有 old_password 和 new_password");
+    }
+    const auth::Result r = auth::changePassword(req.token, oldPass, newPass);
+    if (r.status == auth::Status::Ok) {
+        events::userEvent("password_changed", lower(user));   // 审计事件 (可选事件流)
+        return okJson("{\"ok\":true}");
+    }
+    switch (r.status) {
+        case auth::Status::BadRequest: return errJson(400, r.error);
+        case auth::Status::BadCreds: return errJson(401, r.error);
+        default: return errJson(500, r.error.empty() ? "改密码失败" : r.error);
+    }
+}
+
 Resp apiIce(const Request& req) {
     // 给浏览器用的 ICE 服务器列表。放服务端是为了改部署不用重发前端。
     // 必须登录: 配了 TURN 时这里会下发带时效的临时凭证, 不能对匿名访问者发放。
@@ -948,6 +972,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/me") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");
         return apiMe(req);
+    }
+    if (req.path == "/api/password") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiPassword(req);
     }
     if (req.path == "/api/rooms/enter") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
