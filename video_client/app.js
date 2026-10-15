@@ -894,14 +894,14 @@
       },
       muteAll() {
         for (const p of this.remotes) this.sendSignal(p.id, 'mute-all', {});
-        this.applyMuteAll();  // 自己也算一个
+        this.applyMuteAll('主持人把所有人静音了');  // 自己也算一个
       },
-      applyMuteAll() {
+      applyMuteAll(msg) {
         const track = this.media.stream && this.media.stream.getAudioTracks()[0];
         if (track) track.enabled = false;
         this.media.mic = false;
         this.publishMic();   // 自己被一键静音也要让名单体现出来
-        this.flash('主持人把所有人静音了');
+        this.flash(msg || '主持人让你静音了');
       },
       // 会议锁定: 锁上以后新人进不来 (已经在里面的不受影响)
       async toggleLock() {
@@ -1090,7 +1090,7 @@
       },
       // 让某个人把自己静音 (和他自己按静音一样, 服务端不下发强制指令)
       muteOne(pid) {
-        this.sendSignal(pid, 'mute-all', {});
+        this.sendSignal(pid, 'mute-all', { one: true });   // one: 只是"请你自己静音", 不是全体
         this.flash('已请对方静音');
       },
       // 布局: 宫格 -> 我最大 -> 主持人最大 -> 宫格 (点某一格放大也是同一套 focusPid)
@@ -1411,7 +1411,9 @@
           return;
         }
         if (msg.kind === 'mute-all') {
-          if (msg.from === this.host) this.applyMuteAll();  // 只认主持人发的
+          // 只认主持人发的; 一个人被单独静音和"全体静音"文案分开
+          const one = !!(msg.payload || {}).one;
+          if (msg.from === this.host) this.applyMuteAll(one ? '主持人让你静音了' : '主持人把所有人静音了');
           return;
         }
         const state = this.ensureCall(msg.from);
