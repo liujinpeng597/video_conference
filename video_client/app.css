@@ -352,10 +352,18 @@ button, input { font-family: inherit; }
 
 /* ------------------------------------------------------------ 应用外壳 */
 .app {
-  height: 100dvh;
+  min-height: 100dvh;
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);   /* 左: 导航栏  右: 内容区 */
+  grid-template-rows: auto 1fr;
   background: var(--bg);
+}
+/* 首页 / 个人中心的"外壳": 左侧导航栏 + 右侧内容区。
+   注意别改上面的 .app —— 会议室也是 .app (class="app app--room"), 给它套上两列网格会散架。 */
+.app--shell {
+  height: 100dvh;
+  overflow: hidden;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 /* 会议中: 撑满一屏, 中间滚动, 上下两条栏固定 */
 .app--room {

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=18">
+<link rel="stylesheet" href="app.css?v=19">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -103,7 +103,7 @@
     </div>
 
     <!-- ============================== 加入会议 ============================== -->
-    <div v-else-if="view === 'home'" key="home" class="app">
+    <div v-else-if="view === 'home'" key="home" class="app app--shell">
       <!-- 左侧导航栏 (照腾讯会议的样子: 一列图标 + 底部头像), 右边是内容区 -->
       <aside class="rail" aria-label="主导航">
         <p class="rail__brand" aria-hidden="true"></p>
@@ -220,7 +220,7 @@
     </div>
 
     <!-- ============================== 个人中心 ============================== -->
-    <div v-else-if="view === 'profile'" key="profile" class="app">
+    <div v-else-if="view === 'profile'" key="profile" class="app app--shell">
       <aside class="rail" aria-label="主导航">
         <p class="rail__brand" aria-hidden="true"></p>
         <button class="rail__btn" type="button" :class="{ on: view === 'home' }" @click="goHome()">
@@ -571,7 +571,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=18"></script>
-<script src="app.js?v=18"></script>
+<script src="vendor/vue.global.prod.js?v=19"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

@@ -422,6 +422,25 @@ try {
     );
   }
 
+  // 会议室的壳别被首页那套两列网格带偏 (曾经把 grid-template-columns 加到 .app 上,
+  // 会议室也是 .app, 于是顶栏挤进窄列、舞台跑到右上、控制条掉到左下 —— 整屏散架)
+  const roomBox = await evalIn(
+    cdp,
+    pages[0].sessionId,
+    `(() => {
+       const st = document.querySelector('.stage').getBoundingClientRect();
+       const ct = document.querySelector('.controls').getBoundingClientRect();
+       return { w: innerWidth, vh: innerHeight,
+                stage: Math.round(st.width), ctlTop: Math.round(ct.top) };
+     })()`,
+  );
+  if (roomBox.stage > roomBox.w * 0.7 && roomBox.ctlTop > roomBox.vh * 0.7) {
+    console.log(`会议中布局: 舞台铺满 ${roomBox.stage}/${roomBox.w}px, 控制条贴在底部`);
+  } else {
+    failed = true;
+    console.error(`会议中布局散架: ${JSON.stringify(roomBox)}`);
+  }
+
   // 画面方向: 不能是镜像的 —— 自己的那格也用来放"共享屏幕", 一旦镜像, 共享出去的
   // 文字就全反了。这里锁死"没有任何 video 带 scaleX(-1)"。
   await activate(cdp, pages[0].sessionId);
