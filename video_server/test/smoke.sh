@@ -241,7 +241,9 @@ check "登录 200" "200" "$(status)"
 contains "登录返回 token" "$(body)" '"token":"'
 TOKEN_A=$(jstr token)   # 一次登录只留一个会话: 刚登录把注册那枚挤掉了, 后面都用这枚
 
-call POST /api/login '{"username":"nobody_at_all","password":"hunter2"}'
+# 名字带随机后缀: 用固定名字的话, 每跑一次 smoke 就给那个名字记一次登录失败,
+# 跑够 5 次 (同一个 Redis) 就会被"按账号失败锁定"误伤成 429。
+call POST /api/login "{\"username\":\"nobody$SUF\",\"password\":\"hunter2\"}"
 check "不存在的用户也是 401 (不泄露用户名存不存在)" "401" "$(status)"
 
 call POST /api/register "{\"username\":\"LIN$SUF\",\"password\":\"hunter2\"}"
