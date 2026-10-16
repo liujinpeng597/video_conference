@@ -399,10 +399,12 @@ try {
       await vm.$nextTick();
       const open = !!document.querySelector('.modal');
       const masked = !!document.querySelector('.modal__mask');
-      const focused = document.activeElement === document.querySelector('.modal .input');
+      const focused = document.activeElement === document.querySelector('.modal #f-room');
       // 入会前要能看见自己的画面: 弹窗里有预览, 而且真的挂上了流
       const previews = document.querySelectorAll('.modal .preview__frame video').length;
       const bound = [...document.querySelectorAll('.modal .preview__frame video')].every((v) => !!v.srcObject);
+      const devBtns = document.querySelectorAll('.modal .devbtn').length;    // 静音 / 关摄像头
+      const meter = !!document.querySelector('.modal .meter');               // 试麦电平条
       const mask = document.querySelector('.modal__mask');
       if (mask) mask.click();
       await vm.$nextTick();
@@ -412,12 +414,13 @@ try {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       await vm.$nextTick();
       const closedByEsc = !vm.joinOpen && !document.querySelector('.modal');
-      return { inlineBefore, homeNoPreview, open, masked, focused, previews, bound, closedByMask, closedByEsc };
+      return { inlineBefore, homeNoPreview, open, masked, focused, previews, bound, devBtns, meter,
+               closedByMask, closedByEsc };
     })()`);
   if (!joinUi.inlineBefore && joinUi.homeNoPreview && joinUi.open && joinUi.masked && joinUi.focused &&
-      joinUi.previews === 1 && joinUi.bound &&
+      joinUi.previews === 1 && joinUi.bound && joinUi.devBtns === 2 && joinUi.meter &&
       joinUi.closedByMask && joinUi.closedByEsc) {
-    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦 + 带本地预览; 点遮罩 / Esc 都能关; 首页不再有输入框和预览');
+    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦; 带本地预览 / 静音 / 关摄像头 / 试麦; 点遮罩 / Esc 都能关');
   } else {
     failed = true;
     console.error(`加入会议弹窗断言失败: ${JSON.stringify(joinUi)}`);
@@ -452,6 +455,7 @@ try {
       out.bound = [...document.querySelectorAll('.modal .preview__frame video')].every((v) => !!v.srcObject);
       out.homeNoPreview = !document.querySelector('.home .preview');   // 首页那份删了
       out.devbtns = document.querySelectorAll('.modal .devbtn').length;
+      out.meter = !!document.querySelector('.modal .meter');               // 试麦电平条也搬进来了
       out.passFieldHidden = !document.querySelector('.modal #f-cpass');
       vm.createPass = true;
       await vm.$nextTick();
@@ -466,9 +470,10 @@ try {
       out.chip = [...document.querySelectorAll('.topbar .chip')].some((e) => e.textContent.includes('已加密'));
       return out;
     })()`);
-  if (enc.hasTitle && enc.previews === 1 && enc.bound && enc.homeNoPreview && enc.devbtns === 2 && enc.passFieldHidden &&
+  if (enc.hasTitle && enc.previews === 1 && enc.bound && enc.homeNoPreview && enc.devbtns === 2 && enc.meter &&
+      enc.passFieldHidden &&
       enc.passFieldShown && enc.room && enc.encrypted && enc.closed && enc.chip) {
-    console.log(`创建会议弹窗: 本地预览挂上了流, 麦克风/摄像头 ${enc.devbtns} 个按钮, 勾选后才出现密码框; 首页已无预览`);
+    console.log(`创建会议弹窗: 本地预览挂上了流, 麦克风/摄像头 ${enc.devbtns} 个按钮 + 试麦电平条, 勾选后才出现密码框`);
   } else {
     failed = true;
     console.error(`创建会议弹窗断言失败: ${JSON.stringify(enc)}`);

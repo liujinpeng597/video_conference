@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=26">
+<link rel="stylesheet" href="app.css?v=27">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -529,6 +529,30 @@
             <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
             <span>{{ camOn ? '摄像头已开' : '已关闭' }}</span>
           </button>
+          <button class="devbtn" type="button" v-if="!media.stream" @click="startMedia">
+            <svg class="icon" aria-hidden="true"><use href="#ic-refresh"></use></svg>
+            <span>重试</span>
+          </button>
+        </div>
+        <p class="field__err" role="alert" v-if="media.error">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ media.error }}
+        </p>
+        <!-- 选设备 / 试麦: 和首页那张"设备"卡片是同一套。这里不带 id, 免得和首页的元素撞 id。 -->
+        <label class="devsel" v-if="devices.cam.length > 1">
+          <span class="field__label">摄像头</span>
+          <select class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
+            <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
+          </select>
+        </label>
+        <label class="devsel" v-if="devices.mic.length > 1">
+          <span class="field__label">麦克风</span>
+          <select class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
+            <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
+          </select>
+        </label>
+        <div class="meter" v-if="media.stream">
+          <span class="meter__label">试麦</span>
+          <span class="meter__bar"><i :style="{ width: Math.round(micLevel * 100) + '%' }"></i></span>
         </div>
       </div>
       <form class="form" novalidate @submit.prevent="joinRoom">
@@ -585,6 +609,30 @@
             <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
             <span>{{ camOn ? '摄像头已开' : '已关闭' }}</span>
           </button>
+          <button class="devbtn" type="button" v-if="!media.stream" @click="startMedia">
+            <svg class="icon" aria-hidden="true"><use href="#ic-refresh"></use></svg>
+            <span>重试</span>
+          </button>
+        </div>
+        <p class="field__err" role="alert" v-if="media.error">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ media.error }}
+        </p>
+        <!-- 选设备 / 试麦: 和首页那张"设备"卡片是同一套。这里不带 id, 免得和首页的元素撞 id。 -->
+        <label class="devsel" v-if="devices.cam.length > 1">
+          <span class="field__label">摄像头</span>
+          <select class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
+            <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
+          </select>
+        </label>
+        <label class="devsel" v-if="devices.mic.length > 1">
+          <span class="field__label">麦克风</span>
+          <select class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
+            <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
+          </select>
+        </label>
+        <div class="meter" v-if="media.stream">
+          <span class="meter__label">试麦</span>
+          <span class="meter__bar"><i :style="{ width: Math.round(micLevel * 100) + '%' }"></i></span>
         </div>
       </div>
       <form class="form" novalidate @submit.prevent="createRoom">
@@ -720,7 +768,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=26"></script>
-<script src="app.js?v=26"></script>
+<script src="vendor/vue.global.prod.js?v=27"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>
