@@ -151,6 +151,7 @@
         devSel: { mic: '', cam: '' },
         soundOn: true,      // 进/出、举手的提示音
         leaveArmed: false,  // "离开会议"点第一下只是待确认
+        endArmed: false,    // "结束会议" (主持人) 同理
         renaming: false,
         renameInput: '',
         // 聊天: 服务端只留最近 50 条, 客户端内存里最多留 200 条
@@ -184,6 +185,7 @@
         sessTimer: 0,
         statsTimer: 0,
         leaveTimer: 0,
+        endTimer: 0,
         copyTimer: 0,
       };
     },
@@ -1156,7 +1158,26 @@
         if (this.leaveArmed) { this.leave(); return; }
         this.leaveArmed = true;
         clearTimeout(this.leaveTimer);
+        clearTimeout(this.endTimer);
         this.leaveTimer = setTimeout(() => { this.leaveArmed = false; }, 3000);
+      },
+      // "结束会议" (只有主持人有这颗按钮): 和离开会议一样, 点第一下只是待确认
+      endClick() {
+        if (this.endArmed) { this.endMeeting(); return; }
+        this.endArmed = true;
+        clearTimeout(this.endTimer);
+        this.endTimer = setTimeout(() => { this.endArmed = false; }, 3000);
+      },
+      async endMeeting() {
+        this.endArmed = false;
+        clearTimeout(this.endTimer);
+        try {
+          await this.authed('POST', '/api/rooms/end');
+          this.droppedOut('会议已结束，所有人都被请出了');
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.flash(err.message || '结束会议失败');
+        }
       },
       async saveMyName() {
         const name = this.renameInput.trim();
@@ -1249,6 +1270,8 @@
         this.sessTimer = 0;
         this.leaveTimer = 0;
         this.leaveArmed = false;
+        this.endTimer = 0;
+        this.endArmed = false;
       },
 
       scheduleSync(delay) {
@@ -1275,8 +1298,9 @@
           // 我们的 session 就没了, 服务端会回一个空房间号。这时候留在会议界面
           // 只会看到一个没有房间号的空会议室, 不如老老实实退回大厅重进。
           if (this.view === 'room' && !this.room) {
-            this.droppedOut(r.removed ? '你被主持人移出了会议'
-                                      : '房间状态没了（服务端重启过），重新加入一次');
+            this.droppedOut(r.ended ? '主持人结束了这场会议'
+                                    : (r.removed ? '你被主持人移出了会议'
+                                                 : '房间状态没了（服务端重启过），重新加入一次'));
             return;
           }
         } catch (err) {
@@ -1305,6 +1329,9 @@
         this.resetChat();
         this.view = 'home';
         this.errors = { form: msg };
+        // 被动退出之后人在大厅, 大厅不发别的请求 —— 得把"会话还在不在"这条心跳重新接上,
+        // 不然这个标签页会一直"看起来还登着", 连账号在别处登录了都不会发现 (goHome 里也一样)。
+        this.checkSession();
       },
 
       // 必须一条一条 await 着处理: offer 的 setRemoteDescription 是异步的,

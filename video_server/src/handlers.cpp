@@ -750,12 +750,16 @@ Resp apiRoomsState(const Request& req) {
 
     // 不在房间里了: 看看是不是刚被主持人移出 (踢人时留过标记), 好给前端一个准确的原因
     bool removed = false;
+    bool ended = false;
     if (room.empty()) {
         std::string v;
         std::string e;
         if (redis::get("kicked:" + req.token, &v, &e) && !v.empty()) {
             removed = true;
             redis::del("kicked:" + req.token, &e);
+        } else if (redis::get("ended:" + req.token, &v, &e) && !v.empty()) {
+            ended = true;   // 主持人在别处点了"结束会议"
+            redis::del("ended:" + req.token, &e);
         }
     }
 
@@ -764,6 +768,7 @@ Resp apiRoomsState(const Request& req) {
                   ",\"host\":" + json::quote(hostPid) +
                   ",\"locked\":" + (locked ? "true" : "false") +
                   ",\"removed\":" + (removed ? "true" : "false") +
+                  ",\"ended\":" + (ended ? "true" : "false") +
                   ",\"seq\":" + std::to_string(seq) +
                   ",\"messages\":" + arr +
                   ",\"chat\":" + chatArr +
@@ -925,6 +930,26 @@ Resp apiRoomsLock(const Request& req) {
             return errJson(409, "你还没进房间");
         default:
             return errJson(500, "锁定失败：" + err);
+    }
+}
+
+// 主持人结束整场会议: 所有人 (含自己) 一起被请出, 房间拆掉。
+// 每个人的会话被删之前都留了"会议被结束"的标记, 所以各自下一拍轮询就能拿到准确原因。
+Resp apiRoomsEnd(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string err;
+    switch (presence::endRoom(req.token, &err)) {
+        case presence::End::Ok:
+            return okJson("{\"ok\":true}");
+        case presence::End::NotHost:
+            return errJson(403, "只有主持人能结束会议");
+        case presence::End::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "结束会议失败：" + err);
     }
 }
 
@@ -1226,6 +1251,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/lock") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsLock(req);
+    }
+    if (req.path == "/api/rooms/end") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsEnd(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

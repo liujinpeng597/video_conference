@@ -925,6 +925,48 @@ call POST /api/rooms/leave '{}' "$TOKEN_ENC"
 call POST /api/rooms/leave '{}' "$TOKEN_ENC3"
 
 echo
+echo "---- 结束会议 (主持人) ----"
+# 主持人一键把所有人请出并拆掉房间; 其他人下一拍轮询拿到 ended 标记 (而不是误报"房间没了")。
+USER_END="en2$SUF"
+USER_END2="en2b$SUF"
+call POST /api/register "{\"username\":\"$USER_END\",\"password\":\"hunter2\"}"
+TOKEN_END=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_END2\",\"password\":\"hunter2\"}"
+TOKEN_END2=$(jstr token)
+
+call POST /api/rooms/enter '{}' "$TOKEN_END"
+ENDROOM=$(jstr room)
+check "建房 (准备结束会议) 200" "200" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$ENDROOM\"}" "$TOKEN_END2"
+check "第二个人进来 200" "200" "$(status)"
+check "房间里 2 个人" "2" "$(jcount name)"
+
+call POST /api/rooms/end '{}' "$TOKEN_END2"
+check "非主持人结束会议 403" "403" "$(status)"
+call POST /api/rooms/end
+check "未登录结束会议 401" "401" "$(status)"
+
+call POST /api/rooms/end '{}' "$TOKEN_END"
+check "主持人结束会议 200" "200" "$(status)"
+
+call GET /api/rooms/state '' "$TOKEN_END"
+check "结束后主持人在大厅了 (房间号空)" "" "$(jstr room)"
+call GET /api/rooms/state '' "$TOKEN_END2"
+check "结束后另一个人也被请出" "" "$(jstr room)"
+check "被请出的人拿到'会议已结束'标记" "1" "$(printf '%s' "$(body)" | grep -c '"ended":true')"
+call GET /api/rooms/state '' "$TOKEN_END2"
+check "标记用一次就删 (下一拍不再报结束)" "0" "$(printf '%s' "$(body)" | grep -c '"ended":true')"
+
+call GET /api/me '' "$TOKEN_END2"
+check "被请出的人登录还在 (只是离开房间, 不是掉线) 200" "200" "$(status)"
+
+call POST /api/rooms/enter "{\"room\":\"$ENDROOM\"}" "$TOKEN_END2"
+check "房间真的拆了: 再用这个号是开新的一场 200" "200" "$(status)"
+check "新房间只有 1 个人 (不会看到上一场的人)" "1" "$(jcount name)"
+call POST /api/rooms/leave '{}' "$TOKEN_END2"
+call POST /api/rooms/leave '{}' "$TOKEN_END"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"

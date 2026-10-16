@@ -1177,6 +1177,47 @@ try {
     console.error(`移出成员断言失败: ${JSON.stringify(kicked)}`);
   }
 
+  // 结束会议: 只有主持人有这颗按钮; 一键 (两下确认) 之后所有人回大厅, 房间本身也拆了
+  await activate(cdp, pages[1].sessionId);
+  const endOtherCount = await evalIn(cdp, pages[1].sessionId,
+    `document.querySelectorAll('.topbar .btn--danger').length`);
+  await activate(cdp, pages[0].sessionId);
+  const endUi = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const btn = () => document.querySelector('.topbar .btn--danger');
+      const mine = !!btn();
+      vm.endClick();                                    // 第一下: 只是待确认
+      await vm.$nextTick();
+      const armed = !!vm.endArmed;
+      const label = btn() ? btn().textContent.trim() : '';
+      vm.endClick();                                    // 第二下: 真的结束
+      return { mine, armed, label };
+    })()`);
+  let hostBack = null;
+  for (let i = 0; i < 20; i++) {                        // 主持人自己回大厅
+    await activate(cdp, pages[0].sessionId);
+    hostBack = await evalIn(cdp, pages[0].sessionId,
+      `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`);
+    if (hostBack.view === 'home') break;
+    await sleep(400);
+  }
+  let otherBack = null;
+  for (let i = 0; i < 20; i++) {                        // 另一个人也被请出, 且知道原因
+    await activate(cdp, pages[1].sessionId);
+    otherBack = await evalIn(cdp, pages[1].sessionId,
+      `({ view: (${VM})?.view, err: (${VM})?.errors?.form || '' })`);
+    if (otherBack.view === 'home') break;
+    await sleep(400);
+  }
+  if (endUi.mine && endUi.armed && /确认结束/.test(endUi.label) && endOtherCount === 0 &&
+      hostBack.view === 'home' && /结束/.test(hostBack.err) &&
+      otherBack.view === 'home' && /结束/.test(otherBack.err)) {
+    console.log(`结束会议: 主持人两下确认 ("${endUi.label}") 之后所有人回大厅 (对端提示: ${otherBack.err})`);
+  } else {
+    failed = true;
+    console.error(`结束会议断言失败: ${JSON.stringify({ endUi, endOtherCount, hostBack, otherBack })}`);
+  }
+
   // 可选: E2E_SHOT=<路径.png> 时给开了聊天面板的那个标签页截个图 (人工看 UI 用, CI 不设就不跑)
   if (process.env.E2E_PROBE) {
     for (let i = 0; i < pages.length; i++) {

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=28">
+<link rel="stylesheet" href="app.css?v=29">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -273,6 +273,11 @@
           <button class="btn btn--text" type="button" @click="toggleFullscreen" title="全屏 (快捷键 f)">全屏</button>
           <button class="btn btn--text" type="button" v-if="amHost" @click="toggleLock">
             {{ locked ? '解锁会议' : '锁定会议' }}
+          </button>
+          <button class="btn btn--text btn--danger" :class="{ 'btn--armed': endArmed }" type="button"
+                  v-if="amHost" @click="endClick"
+                  :title="endArmed ? '再点一次就结束整场会议' : '结束会议：所有人都被请出'">
+            {{ endArmed ? '确认结束？' : '结束会议' }}
           </button>
         </div>
       </header>
@@ -727,7 +732,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=28"></script>
-<script src="app.js?v=28"></script>
+<script src="vendor/vue.global.prod.js?v=29"></script>
+<script src="app.js?v=29"></script>
 </body>
 </html>

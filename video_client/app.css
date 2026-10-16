@@ -1037,8 +1037,12 @@ button, input { font-family: inherit; }
 
 /* 顶栏那几个文字按钮的"选中"态 (布局按钮用: 放大模式下高亮) */
 .btn--text.on { color: var(--brand); background: var(--brand-weak); font-weight: 600; }
+/* 顶栏的"结束会议" (主持人专属): 平时灰着不抢眼, 待确认时变红 */
+.btn--text.btn--danger { color: var(--danger-text); }
+.btn--text.btn--danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-weak); }
+.btn--text.btn--danger.btn--armed { color: #fff; background: var(--danger); font-weight: 600; }
 
-/* 设备下拉 + 试麦电平条 (首页) */
+/* 设备下拉 + 试麦电平条 (在"加入会议 / 创建会议"两个弹窗里) */
 .devsel { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .meter { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .meter__label { font-size: 12px; color: var(--text-3); }

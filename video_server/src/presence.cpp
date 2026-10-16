@@ -497,6 +497,40 @@ Lock setLocked(const std::string& token, bool locked, std::string* err) {
     return Lock::Ok;
 }
 
+End endRoom(const std::string& token, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? End::NotInRoom : End::Error;
+
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return End::Error;
+
+    std::string hostToken;
+    std::vector<std::string> members;
+    for (const redis::Field& f : fields) {
+        if (f.name == kHostField) { hostToken = f.value; continue; }
+        if (!f.name.empty() && f.name[0] == '@') continue;  // @pass / @hand: / @mic: ... 不是成员
+        members.push_back(f.name);                          // 成员字段名就是令牌
+    }
+    if (hostToken != token) return End::NotHost;
+
+    const std::string room = me.room;
+    std::string ignore;
+    // 先留标记, 再拆房间: 反过来的话, 中间那一拍前端只会看到"房间没了" (见 handlers 读标记那段)。
+    for (const std::string& tok : members) {
+        // 不用给调用者 (主持人) 留: 他自己那边是本地立刻就退出的, 留了反而可能在
+        // 他"结束完立刻又开一场、之后又离开"的时候, 被当成这场新会议的结束原因。
+        if (tok == token) continue;
+        redis::setEx("ended:" + tok, "1", 60, &ignore);
+    }
+    // 逐个"正常离开": 复用 leave, 会话 / 信箱 / 成员字段都按同一套清干净
+    for (const std::string& tok : members) leave(tok, &ignore);
+
+    redis::del(roomKey(room), &ignore);       // 房间本身: 人走光了 leave 可能已经删了, 这里兜底
+    redis::del(chatKey(room), &ignore);
+    redis::del(chatSeqKey(room), &ignore);
+    return End::Ok;
+}
+
 bool leave(const std::string& token, std::string* err) {
     Me me;
     if (!whereAmI(token, &me, err)) return err->empty();  // 本来就不在, 当成成功

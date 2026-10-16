@@ -131,6 +131,12 @@ Kick kick(const std::string& byToken, const std::string& targetPid, std::string*
 enum class Lock { Ok, NotHost, NotInRoom, Error };
 Lock setLocked(const std::string& token, bool locked, std::string* err);
 
+// 主持人结束整场会议: 房间里所有人 (含自己) 都被请出去, 房间本身也拆掉 (房间 hash / 聊天 / 序号)。
+// 删每个人的会话之前先留一个 ended:<令牌> 标记 (60 秒), 前端据此显示"主持人结束了会议",
+// 而不是误报"房间状态没了(服务端重启过)" —— 和踢人的 kicked:<令牌> 是一套路子。
+enum class End { Ok, NotHost, NotInRoom, Error };
+End endRoom(const std::string& token, std::string* err);
+
 bool leave(const std::string& token, std::string* err);
 
 // 活跃房间数 (给 /api/health 用, SCAN 出来的, 有上限)
