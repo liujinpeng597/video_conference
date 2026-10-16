@@ -274,12 +274,13 @@ try {
     console.log(`截图(个人中心): ${process.env.E2E_SHOT_PROFILE}`);
   }
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goHome(); return true; })()`);
-  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.preview')`, 10000, '切回会议首页');
+  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.home')`, 10000, '切回会议首页');
   if (tabs === 2) console.log('三个界面: 个人中心有昵称 + 修改密码, 左侧栏两个入口, 能切回会议页');
   else { failed = true; console.error(`左侧栏入口数不对: ${tabs}`); }
 
-  // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经 .join 用 margin-inline:auto
-  // 变成"按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
+  // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经用 margin-inline:auto 变成
+  // "按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
+  // 本地预览现在搬进了弹窗 (首页那份删了), 所以量弹窗里那一份。
   await activate(cdp, pages[0].sessionId);
   await cdp.send(
     'Emulation.setDeviceMetricsOverride',
@@ -292,9 +293,11 @@ try {
     `(async () => {
        const vm = ${VM};
        if (vm.camOn) vm.toggleCam();            // 关掉摄像头, 复现出问题的状态
+       vm.openCreate();
        await vm.$nextTick();
-       const preview = Math.round(document.querySelector('.preview').getBoundingClientRect().width);
-       const frame = Math.round(document.querySelector('.preview__frame').getBoundingClientRect().width);
+       const preview = Math.round(document.querySelector('.modal .preview').getBoundingClientRect().width);
+       const frame = Math.round(document.querySelector('.modal .preview__frame').getBoundingClientRect().width);
+       vm.closeCreate();
        if (!vm.camOn) vm.toggleCam();           // 还原, 别影响后面的媒体断言
        await vm.$nextTick();
        return { preview, frame, camBack: vm.camOn };
@@ -358,7 +361,7 @@ try {
   if (process.env.E2E_SHOT_LOBBY) {
     await activate(cdp, pages[0].sessionId);
     if (process.env.E2E_LOBBY_CAMOFF) {
-      // 复现"宽屏 + 摄像头关着"的布局: 关掉媒体, 再看 .preview 的实际尺寸
+      // 复现"宽屏 + 摄像头关着"的布局: 关掉媒体, 再看大厅的实际尺寸
       const how = process.env.E2E_LOBBY_CAMOFF === 'toggle' ? 'toggleCam' : 'stopMedia';
       await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).${how}(); return true; })()`);
       await sleep(400);
@@ -370,8 +373,7 @@ try {
          const g = (sel) => { const e = document.querySelector(sel); if (!e) return null;
            const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
            return { w: Math.round(r.width), h: Math.round(r.height), ar: s.aspectRatio, align: s.alignItems }; };
-         return { vw: innerWidth, join: g('.join'), side: g('.join__side'), preview: g('.preview'),
-                  frame: g('.preview__frame'), off: g('.preview__off') };
+         return { vw: innerWidth, home: g('.home'), side: g('.home__side'), card: g('.card') };
        })()`,
     );
     console.log('lobby geo:', JSON.stringify(geo));
@@ -392,11 +394,15 @@ try {
   const joinUi = await evalIn(cdp, pages[0].sessionId, `(async () => {
       const vm = ${VM};
       const inlineBefore = !!document.querySelector('.home #f-room');
+      const homeNoPreview = !document.querySelector('.home .preview');   // 首页那份预览已经删了
       vm.focusJoin();
       await vm.$nextTick();
       const open = !!document.querySelector('.modal');
       const masked = !!document.querySelector('.modal__mask');
       const focused = document.activeElement === document.querySelector('.modal .input');
+      // 入会前要能看见自己的画面: 弹窗里有预览, 而且真的挂上了流
+      const previews = document.querySelectorAll('.modal .preview__frame video').length;
+      const bound = [...document.querySelectorAll('.modal .preview__frame video')].every((v) => !!v.srcObject);
       const mask = document.querySelector('.modal__mask');
       if (mask) mask.click();
       await vm.$nextTick();
@@ -406,11 +412,12 @@ try {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       await vm.$nextTick();
       const closedByEsc = !vm.joinOpen && !document.querySelector('.modal');
-      return { inlineBefore, open, masked, focused, closedByMask, closedByEsc };
+      return { inlineBefore, homeNoPreview, open, masked, focused, previews, bound, closedByMask, closedByEsc };
     })()`);
-  if (!joinUi.inlineBefore && joinUi.open && joinUi.masked && joinUi.focused &&
+  if (!joinUi.inlineBefore && joinUi.homeNoPreview && joinUi.open && joinUi.masked && joinUi.focused &&
+      joinUi.previews === 1 && joinUi.bound &&
       joinUi.closedByMask && joinUi.closedByEsc) {
-    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦; 点遮罩 / Esc 都能关; 首页不再直接摆输入框');
+    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦 + 带本地预览; 点遮罩 / Esc 都能关; 首页不再有输入框和预览');
   } else {
     failed = true;
     console.error(`加入会议弹窗断言失败: ${JSON.stringify(joinUi)}`);
@@ -441,8 +448,9 @@ try {
       vm.openCreate();
       await vm.$nextTick();
       out.hasTitle = !!document.querySelector('.modal #create-title');
-      out.previews = document.querySelectorAll('.preview__frame video').length;   // 首页一个 + 弹窗一个
-      out.bound = [...document.querySelectorAll('.preview__frame video')].every((v) => !!v.srcObject);
+      out.previews = document.querySelectorAll('.modal .preview__frame video').length;   // 弹窗里就一份
+      out.bound = [...document.querySelectorAll('.modal .preview__frame video')].every((v) => !!v.srcObject);
+      out.homeNoPreview = !document.querySelector('.home .preview');   // 首页那份删了
       out.devbtns = document.querySelectorAll('.modal .devbtn').length;
       out.passFieldHidden = !document.querySelector('.modal #f-cpass');
       vm.createPass = true;
@@ -458,9 +466,9 @@ try {
       out.chip = [...document.querySelectorAll('.topbar .chip')].some((e) => e.textContent.includes('已加密'));
       return out;
     })()`);
-  if (enc.hasTitle && enc.previews === 2 && enc.bound && enc.devbtns === 2 && enc.passFieldHidden &&
+  if (enc.hasTitle && enc.previews === 1 && enc.bound && enc.homeNoPreview && enc.devbtns === 2 && enc.passFieldHidden &&
       enc.passFieldShown && enc.room && enc.encrypted && enc.closed && enc.chip) {
-    console.log(`创建会议弹窗: 本地预览 ${enc.previews} 个都挂上了流, 麦克风/摄像头 ${enc.devbtns} 个按钮, 勾选后才出现密码框`);
+    console.log(`创建会议弹窗: 本地预览挂上了流, 麦克风/摄像头 ${enc.devbtns} 个按钮, 勾选后才出现密码框; 首页已无预览`);
   } else {
     failed = true;
     console.error(`创建会议弹窗断言失败: ${JSON.stringify(enc)}`);

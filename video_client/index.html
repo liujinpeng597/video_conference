@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=25">
+<link rel="stylesheet" href="app.css?v=26">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -167,16 +167,8 @@
           </section>
 
           <aside class="home__side">
-            <div class="preview">
-              <div class="preview__frame">
-                <video :ref="bindVideo" class="preview__video" autoplay playsinline muted v-show="camOn"></video>
-                <div class="preview__off" v-if="!camOn || !media.stream">
-                  <svg class="icon icon--lg" aria-hidden="true"><use href="#ic-video-off"></use></svg>
-                  <p>{{ media.stream ? '摄像头关着' : '摄像头没打开' }}</p>
-                </div>
-              </div>
-              <p class="preview__cap">本地预览</p>
-            </div>
+            <!-- 本地预览搬到"加入会议"和"创建会议"两个弹窗里了: 入会/建房之前看自己要看的。
+                 首页只留下设备开关 (静音 / 关摄像头 / 选设备 / 试麦电平)。 -->
             <div class="card">
               <h2 class="card__title">设备</h2>
               <div class="devrow">
@@ -517,6 +509,28 @@
           <svg class="icon" aria-hidden="true"><use href="#ic-x"></use></svg>
         </button>
       </div>
+      <!-- 入会之前先看一眼自己: 画面 + 麦克风/摄像头开关 -->
+      <div class="preview">
+        <div class="preview__frame">
+          <video :ref="bindVideo" class="preview__video" autoplay playsinline muted v-show="camOn"></video>
+          <div class="preview__off" v-if="!camOn || !media.stream">
+            <svg class="icon icon--lg" aria-hidden="true"><use href="#ic-video-off"></use></svg>
+            <p>{{ media.stream ? '摄像头关着' : '摄像头没打开' }}</p>
+          </div>
+        </div>
+        <div class="devrow">
+          <button class="devbtn" type="button" @click="toggleMic"
+                  :disabled="!media.stream" :aria-pressed="micOn">
+            <svg class="icon" aria-hidden="true"><use :href="micOn ? '#ic-microphone' : '#ic-microphone-off'"></use></svg>
+            <span>{{ micOn ? '麦克风已开' : '已静音' }}</span>
+          </button>
+          <button class="devbtn" type="button" @click="toggleCam"
+                  :disabled="!media.stream" :aria-pressed="camOn">
+            <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
+            <span>{{ camOn ? '摄像头已开' : '已关闭' }}</span>
+          </button>
+        </div>
+      </div>
       <form class="form" novalidate @submit.prevent="joinRoom">
         <div class="field">
           <label class="field__label" for="f-room">房间号</label>
@@ -706,7 +720,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=25"></script>
-<script src="app.js?v=25"></script>
+<script src="vendor/vue.global.prod.js?v=26"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>
