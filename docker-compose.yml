@@ -161,6 +161,42 @@ services:
   # 测试服务: 直接复用编译阶段的镜像, 里面有编译器 / libpq-dev / libsodium-dev /
   # libhiredis-dev 和源码, 所以本地什么都不用装也能跑测试。
   # 测试用同一个库但用户名带时间戳, 可以反复跑。
+  # 对象存储 (S3 兼容): 会议录制的视频放这里 —— 不占 PostgreSQL, 也不占后端容器磁盘
+  # (后端三个副本都是无状态的, 存本地就等于"哪台录的就丢在哪台")。
+  # 对外不发布端口: 上传/下载都走后端 (鉴权 + 按账号隔离), 浏览器不直连 MinIO。
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?没设置 MINIO_ROOT_USER, 先 cp .env.example .env 并填上}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?没设置 MINIO_ROOT_PASSWORD, 先 cp .env.example .env 并填上}
+    volumes:
+      - miniodata:/data
+    ports:
+      # 只绑回环, 而且换端口: 9000 已经给 nginx 用了。这两个口是给本机调试/控制台看的。
+      - "127.0.0.1:9100:9000"
+      - "127.0.0.1:9101:9001"
+    restart: unless-stopped
+    logging: *default-logging
+
+  # 一次性把桶建出来 (幂等, 跑完就退)。不依赖健康检查: mc 自己重试着等 minio 起来。
+  minio-init:
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && break
+          echo "等 minio 起来... ($$i)"; sleep 2
+        done
+        mc mb --ignore-existing local/recordings && echo "recordings 桶就绪"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?没设置 MINIO_ROOT_USER, 先 cp .env.example .env 并填上}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?没设置 MINIO_ROOT_PASSWORD, 先 cp .env.example .env 并填上}
+    restart: "no"
+
   test:
     build:
       context: .
@@ -308,6 +344,7 @@ services:
 
 volumes:
   pgdata:
+  miniodata:
   promdata:
   grafanadata:
   kafkadata:
