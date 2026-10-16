@@ -557,6 +557,31 @@ try {
   }
   await evalIn(cdp, pages[0].sessionId, `(async () => { await (${VM}).leave(); return true; })()`);
   await activate(cdp, pages[0].sessionId);
+  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.tilebtn')`, 10000, '退出加密房间后回大厅');
+
+  // 无障碍: 弹窗关掉之后焦点还给打开它的那颗按钮; 左栏给当前页标了 aria-current
+  const a11y = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const btn = [...document.querySelectorAll('.tilebtn')].find((b) => b.textContent.includes('加入会议'));
+      btn.focus();
+      const focusedBefore = document.activeElement === btn;
+      vm.focusJoin();
+      await vm.$nextTick();
+      const inModal = document.activeElement === document.querySelector('.modal #f-room');
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await vm.$nextTick();
+      const backToBtn = document.activeElement === btn;
+      const rail = [...document.querySelectorAll('.rail__btn')].map((b) => b.getAttribute('aria-current') || '-');
+      return { focusedBefore, inModal, backToBtn, rail };
+    })()`);
+  // 当前页是 "page"; 另一个按钮是 "false" (aria-current 合法取值, 表示不是当前页)
+  if (a11y.focusedBefore && a11y.inModal && a11y.backToBtn &&
+      a11y.rail[0] === 'page' && ['false', '-'].includes(a11y.rail[1])) {
+    console.log(`无障碍: 弹窗开着时焦点在房间号输入框, Esc 关掉之后还给"加入会议"按钮; 左栏 aria-current=${a11y.rail.join('/')}`);
+  } else {
+    failed = true;
+    console.error(`无障碍断言失败: ${JSON.stringify(a11y)}`);
+  }
 
   const room = await evalIn(cdp, pages[0].sessionId, enter(''));
   console.log(`房间号: ${room}`);
@@ -1131,7 +1156,8 @@ try {
   const host0 = await evalIn(
     cdp,
     pages[0].sessionId,
-    `({ am: (${VM}).amHost, kicks: document.querySelectorAll('.tile__kick').length })`,
+    `({ am: (${VM}).amHost, kicks: document.querySelectorAll('.tile__kick').length,
+        keys: document.querySelectorAll('.tile[tabindex="0"][role="button"]').length })`,
   );
   await activate(cdp, pages[1].sessionId);
   const host1 = await evalIn(
@@ -1139,8 +1165,8 @@ try {
     pages[1].sessionId,
     `({ am: (${VM}).amHost, kicks: document.querySelectorAll('.tile__kick').length })`,
   );
-  if (host0.am && !host1.am && host0.kicks === 2 && host1.kicks === 0) {
-    console.log('主持人: 只有建房者能看到"移出"按钮, 别人看不到');
+  if (host0.am && !host1.am && host0.kicks === 2 && host1.kicks === 0 && host0.keys === 3) {
+    console.log('主持人: 只有建房者能看到"移出"按钮, 别人看不到; 3 个视频格都是键盘可达的按钮 (tabindex+role)');
   } else {
     failed = true;
     console.error(`主持人断言失败: ${JSON.stringify({ host0, host1 })}`);

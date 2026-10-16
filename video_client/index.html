@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=30">
+<link rel="stylesheet" href="app.css?v=31">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -107,10 +107,12 @@
       <!-- 左侧导航栏 (照腾讯会议的样子: 一列图标 + 底部头像), 右边是内容区 -->
       <aside class="rail" aria-label="主导航">
         <p class="rail__brand" aria-hidden="true"></p>
-        <button class="rail__btn" type="button" :class="{ on: view === 'home' }" @click="goHome()">
+        <button class="rail__btn" type="button" :class="{ on: view === 'home' }"
+                :aria-current="view === 'home' ? 'page' : false" @click="goHome()">
           <svg class="icon" aria-hidden="true"><use href="#ic-video"></use></svg>会议
         </button>
-        <button class="rail__btn" type="button" :class="{ on: view === 'profile' }" @click="goProfile()">
+        <button class="rail__btn" type="button" :class="{ on: view === 'profile' }"
+                :aria-current="view === 'profile' ? 'page' : false" @click="goProfile()">
           <svg class="icon" aria-hidden="true"><use href="#ic-user"></use></svg>个人中心
         </button>
         <span class="rail__spacer"></span>
@@ -176,10 +178,12 @@
     <div v-else-if="view === 'profile'" key="profile" class="app app--shell">
       <aside class="rail" aria-label="主导航">
         <p class="rail__brand" aria-hidden="true"></p>
-        <button class="rail__btn" type="button" :class="{ on: view === 'home' }" @click="goHome()">
+        <button class="rail__btn" type="button" :class="{ on: view === 'home' }"
+                :aria-current="view === 'home' ? 'page' : false" @click="goHome()">
           <svg class="icon" aria-hidden="true"><use href="#ic-video"></use></svg>会议
         </button>
-        <button class="rail__btn" type="button" :class="{ on: view === 'profile' }" @click="goProfile()">
+        <button class="rail__btn" type="button" :class="{ on: view === 'profile' }"
+                :aria-current="view === 'profile' ? 'page' : false" @click="goProfile()">
           <svg class="icon" aria-hidden="true"><use href="#ic-user"></use></svg>个人中心
         </button>
         <span class="rail__spacer"></span>
@@ -305,7 +309,11 @@
         </button>
 
         <div class="grid" :data-n="tiles" :class="{ 'is-focus': focusPid }">
-          <article class="tile" :class="{ 'tile--focus': focusPid === myPid, 'tile--speaking': speaking[myPid] }" @click="toggleFocus(myPid)">
+          <!-- 整格是一颗"放大/缩小"的按钮: 键盘也要能按 (Tab 到它, 回车/空格放大) -->
+          <article class="tile" tabindex="0" role="button"
+                   :aria-label="(focusPid === myPid ? '缩小' : '放大') + '我的画面'"
+                   :class="{ 'tile--focus': focusPid === myPid, 'tile--speaking': speaking[myPid] }" @click="toggleFocus(myPid)"
+                   @keydown.enter.prevent="toggleFocus(myPid)" @keydown.space.prevent="toggleFocus(myPid)">
             <video :ref="bindVideo" class="tile__video" autoplay playsinline muted v-show="camOn || sharing"></video>
             <div class="tile__off" v-if="(!camOn || !media.stream) && !sharing">
               <span class="avatar" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span>
@@ -315,8 +323,10 @@
             <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span><b class="tile__you">你</b>{{ myName }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
-          <article class="tile" v-for="p in remotes" :key="p.id"
-                   :class="{ 'tile--focus': focusPid === p.id, 'tile--speaking': speaking[p.id] }" @click="toggleFocus(p.id)">
+          <article class="tile" v-for="p in remotes" :key="p.id" tabindex="0" role="button"
+                   :aria-label="(focusPid === p.id ? '缩小' : '放大') + p.name + '的画面'"
+                   :class="{ 'tile--focus': focusPid === p.id, 'tile--speaking': speaking[p.id] }" @click="toggleFocus(p.id)"
+                   @keydown.enter.prevent="toggleFocus(p.id)" @keydown.space.prevent="toggleFocus(p.id)">
             <video :ref="(el) => bindRemoteVideo(el, p.id)" class="tile__video tile__video--remote"
                    autoplay playsinline></video>
             <div class="tile__off" v-if="!peerHasVideo[p.id]">
@@ -356,7 +366,8 @@
         </header>
 
         <!-- 消息文本用 {{ }} 插值渲染 (Vue 自动转义), 绝不用 v-html: 聊天内容是最脏的用户输入 -->
-        <div class="chat__list" ref="chatList">
+        <!-- role="log" = 新消息用 polite 方式播报, 不会打断读屏正在读的内容 -->
+        <div class="chat__list" ref="chatList" role="log" aria-label="聊天消息">
           <p class="chat__empty" v-if="chatMessages.length === 0">还没有消息，说点什么吧。</p>
           <div class="chat__msg" v-for="m in chatMessages" :key="m.id"
                :class="{ 'chat__msg--mine': m.from === myPid }">
@@ -745,7 +756,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=30"></script>
-<script src="app.js?v=30"></script>
+<script src="vendor/vue.global.prod.js?v=31"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>

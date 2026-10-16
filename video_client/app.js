@@ -38,6 +38,9 @@
   }
   applyTheme(localStorage.getItem(STORE_THEME) || 'auto');
 
+  // 弹窗关掉之后把焦点还给打开它的那颗按钮 —— 键盘用户不至于掉到页面开头
+  let modalOpener = null;
+
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
   const HEALTH_MS = 5000;      // 服务端没响应时的重试间隔
@@ -425,19 +428,28 @@
       focusJoin() {
         this.errors = {};
         this.needsPass = false;   // 重新走一遍, 上回"要密码"的状态不留着
+        modalOpener = document.activeElement;
         this.joinOpen = true;
         this.$nextTick(() => { const el = this.$refs.roomInput; if (el) el.focus(); });
       },
       closeJoin() {
         this.joinOpen = false;
+        this.restoreFocus();
       },
       // "创建会议"那个大按钮: 弹出创建弹窗 (本地预览 + 可选会议密码)
       openCreate() {
         this.errors = {};
+        modalOpener = document.activeElement;
         this.createOpen = true;
       },
       closeCreate() {
         this.createOpen = false;
+        this.restoreFocus();
+      },
+      // 关弹窗之后把焦点还给打开它的人 (不是弹窗里最后点的那个控件)
+      restoreFocus() {
+        if (modalOpener && modalOpener.isConnected && modalOpener.focus) modalOpener.focus();
+        modalOpener = null;
       },
       // 最近会议里的"进入": 填上房间号直接进
       rejoin(code) {
