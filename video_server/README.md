@@ -178,8 +178,8 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/profile` | `{"display_name"}` | `{"ok":true}`；房间列表里显示昵称（空 = 用登录名） |
 | POST | `/api/avatar` | `{"data"}`（jpeg/png/webp 的 data URL；空串 = 移除） | `{"ok":true}`；上限 96KB |
 | GET | `/api/avatar?room=&pid=` | - | 头像原图字节；只能取"自己所在房间"里人的头像 |
-| POST | `/api/rooms/enter` | `{"room"}`，`room` 可为空 | `{"room","participants":[…]}` |
-| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `locked` / `removed`（前端每 0.4-2 秒轮一次） |
+| POST | `/api/rooms/enter` | `{"room","pass"}`，`room` 可为空；`pass` 可选（建房=设密码，入会=给密码） | `{"room","participants":[…]}`；加密房间不给密码 **428**、密码错 403 |
+| GET | `/api/rooms/state?since=N&chat=M` | - | 成员列表（含 `hand` / `mic`）+ 信令收件箱 + 房间聊天 + `host` / `locked` / `removed` / `ended`（前端每 0.4-2 秒轮一次） |
 | POST | `/api/rooms/signal` | `{"to","kind","payload"}` | `{"ok":true,"delivered":bool}` |
 | POST | `/api/rooms/chat` | `{"text"}` | `{"id","from","name","text"}` |
 | POST | `/api/rooms/hand` | `{"raised":bool}` | `{"ok":true,"hand":bool}` |
@@ -187,6 +187,7 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/rooms/share` | `{"on":bool}` | `{"ok":true,"share":bool}`；让别人看得见谁在共享 |
 | POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
 | POST | `/api/rooms/lock` | `{"locked":bool}` | `{"ok":true,"locked":bool}`；只有主持人能调 |
+| POST | `/api/rooms/end` | - | `{"ok":true}`；只有主持人能调；所有人一起被请出、房间拆掉 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
@@ -220,6 +221,15 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 - 会议锁定（`POST /api/rooms/lock`，只有主持人能调）：房间 hash 里一个 `@locked` 字段，
   锁上以后 `enter` 直接拒新人（403），**已经在里面的人不受影响**（心跳走的是另一条路）。
   主持人自己始终能进（不然锁了就没人能解锁）。
+- 会议密码（`POST /api/rooms/enter` 带 `pass`）：房间 hash 里一个 `@pass` 字段，存 Argon2id 哈希
+  （和账号密码同一套），跟着房间 TTL 一起过期、**不落库**。全新的房间由第一个进来的人定密码
+  （留空 = 普通房间）；房间已经有 `@pass` 就沿用并要求密码 —— 不给密码回 **428**
+  （前端据此把密码框掀开），密码错回 403。判锁在验密码**之前**：锁上的加密房间对陌生人只说
+  "已锁定"，不泄露这个房间要不要密码。已经在里面的人重新进（刷新）不用再输一次。
+- 结束会议（`POST /api/rooms/end`，只有主持人能调）：房间里所有人（含自己）按"正常离开"清掉，
+  房间 hash / 聊天 / 序号一起删。每个人的会话被删之前先留一个 `ended:<令牌>` 标记（60 秒、用一次
+  就删），前端据此说"主持人结束了这场会议"，而不是误报"服务端重启"。和踢人的 `kicked:` 同一路子。
+  **删 Redis 会话只清"我在哪个房间"**，登录令牌在库里 —— 所以被请出的人不会被登出。
 - 昵称 / 头像：房间里显示的 `participants[].name` 是**昵称**（没设就用登录名），登录名只留在
   服务端；头像存的是 data URL（前端 128×128 压好后传上来），`participants[].av` 是版本号，
   别人的头像走 `GET /api/avatar?room=&pid=` 取 —— **按 pid 取、并且校验调用者在同一个房间**，
@@ -318,8 +328,10 @@ upstream 里的 `resolve`（要么升级，要么退回"变量 + resolver"的写
 **还没做、但迟早要做的：**
 
 - **TLS 终止**在 nginx 这一层，加证书就行，代码不用动。
-- **限流**：现在没有。放在 nginx（`limit_req`）或者应用里按用户名/IP 记失败次数都可以。
-  这是当前最该补的安全缺口。
+- **限流**：三层已就位 —— nginx 按 IP（`limit_req`，见 `nginx/snippets/ratelimit-zones.conf`）、
+  后端按账号记失败次数（默认 5 次错密码锁 15 分钟，`LOGIN_FAIL_MAX` / `LOGIN_LOCK_SECONDS` 可调）、
+  后端按令牌（每个令牌每 `PER_TOKEN_WINDOW_SECONDS` 秒最多 `PER_TOKEN_RPM` 次，默认 60 秒 / 600 次）。
+  计数都在 Redis（多实例共享），Redis 出错时一律放行 —— 限流是保险丝，不能自己变成故障源。
 - **可观测性**：`/metrics` + monitoring profile + 带毫秒时间戳/实例名的日志已就位
   （见「可观测性」一节）；外部探活与告警通知渠道等公网部署时再接。
 - **`X-Forwarded-For`**：过 nginx 之后后端看到的对端地址全是 nginx 的 IP。要拿真实 IP
