@@ -388,6 +388,42 @@ try {
        return vm.room;
      })()`;
   await activate(cdp, pages[0].sessionId);
+  // 加入会议弹窗: 点"加入会议"弹出 + 输入框自动聚焦; 点遮罩 / Esc 都能关; 首页不再直接摆输入框
+  const joinUi = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const inlineBefore = !!document.querySelector('.home #f-room');
+      vm.focusJoin();
+      await vm.$nextTick();
+      const open = !!document.querySelector('.modal');
+      const masked = !!document.querySelector('.modal__mask');
+      const focused = document.activeElement === document.querySelector('.modal .input');
+      const mask = document.querySelector('.modal__mask');
+      if (mask) mask.click();
+      await vm.$nextTick();
+      const closedByMask = !vm.joinOpen;
+      vm.focusJoin();                                   // 再开一次, 试 Esc
+      await vm.$nextTick();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await vm.$nextTick();
+      const closedByEsc = !vm.joinOpen && !document.querySelector('.modal');
+      return { inlineBefore, open, masked, focused, closedByMask, closedByEsc };
+    })()`);
+  if (!joinUi.inlineBefore && joinUi.open && joinUi.masked && joinUi.focused &&
+      joinUi.closedByMask && joinUi.closedByEsc) {
+    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦; 点遮罩 / Esc 都能关; 首页不再直接摆输入框');
+  } else {
+    failed = true;
+    console.error(`加入会议弹窗断言失败: ${JSON.stringify(joinUi)}`);
+  }
+  if (process.env.E2E_SHOT_JOIN) {   // 人工看弹窗长什么样 (CI 不设就不跑)
+    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; vm.focusJoin(); await vm.$nextTick(); return true; })()`);
+    await sleep(300);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_JOIN, Buffer.from(s.data, 'base64'));
+    console.log(`截图(加入会议弹窗): ${process.env.E2E_SHOT_JOIN}`);
+    await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).closeJoin(); return true; })()`);
+  }
+
   const room = await evalIn(cdp, pages[0].sessionId, enter(''));
   console.log(`房间号: ${room}`);
   if (!room) throw new Error('第一个标签页没有拿到房间号');

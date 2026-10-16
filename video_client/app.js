@@ -110,6 +110,7 @@
         profErr: '',
         history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
         showAllHistory: false,
+        joinOpen: false,    // "加入会议"弹窗: 房间号输入框只在弹窗里出现
         todayDay: '',
         todayWeek: '',
 
@@ -221,6 +222,10 @@
 
       // 会议里的键盘快捷键: m 静音 / v 关摄像头 / f 全屏。输入框里打字时不抢键。
       window.addEventListener('keydown', (e) => {
+        if (this.joinOpen) {                             // 加入会议弹窗开着: 只认 Esc
+          if (e.key === 'Escape') { e.preventDefault(); this.closeJoin(); }
+          return;
+        }
         if (this.view !== 'room') return;
         const t = e.target;
         if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -376,12 +381,14 @@
         this.loadDevices();   // 设备下拉
       },
 
-      // "加入会议"那个大按钮: 把焦点送到房间号输入框
+      // "加入会议"那个大按钮: 弹出加入会议弹窗, 焦点落到房间号输入框
       focusJoin() {
-        const el = this.$refs.roomInput;
-        if (!el) return;
-        el.focus();
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        this.errors = {};
+        this.joinOpen = true;
+        this.$nextTick(() => { const el = this.$refs.roomInput; if (el) el.focus(); });
+      },
+      closeJoin() {
+        this.joinOpen = false;
       },
       // 最近会议里的"进入": 填上房间号直接进
       rejoin(code) {
@@ -741,6 +748,7 @@
           this.focusPid = '';
           this.startLevelTimer();
           this.view = 'room';
+          this.joinOpen = false;   // 进房之后弹窗收掉
           this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
           this.scheduleSync(0);
