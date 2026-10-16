@@ -263,15 +263,49 @@ try {
 
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goProfile(); return true; })()`);
   // 视图切换是 <transition mode="out-in">, 得等新视图真的挂上 (一次 $nextTick 不够)
-  await waitIn(cdp, pages[0].sessionId,
-               `!!document.querySelector('#f-nick') && !!document.querySelector('#f-op')`,
-               10000, '切到个人中心 (昵称 + 修改密码都在)');
+  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.setrow')`, 10000, '切到个人中心 (设置列表)');
+  // 个人中心是"分组列表 -> 二级页": 昵称在「个人资料」里, 修改密码在「账号安全」里
+  const prof = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const out = {
+        groups: [...document.querySelectorAll('.setgroup__title')].map((e) => e.textContent.trim()),
+        rows: document.querySelectorAll('.setrow').length,
+      };
+      vm.openProfSection('me');
+      await vm.$nextTick();
+      out.nick = !!document.querySelector('#f-nick');
+      out.backFocused = document.activeElement === document.querySelector('.sethead__back');
+      vm.closeProfSection();
+      await vm.$nextTick();
+      vm.openProfSection('security');
+      await vm.$nextTick();
+      out.pw = !!document.querySelector('#f-op');
+      vm.closeProfSection();
+      await vm.$nextTick();
+      out.backToHeader = !!document.querySelector('.sethead') === false && !!document.querySelector('.setrow');
+      return out;
+    })()`);
+  if (prof.groups.join('/') === '账号/通用/会话' && prof.rows === 6 && prof.nick && prof.pw &&
+      prof.backFocused && prof.backToHeader) {
+    console.log(`个人中心: 分成 ${prof.groups.join(' / ')} 三组共 ${prof.rows} 个入口; 点进去是二级页 (个人资料=昵称, 账号安全=改密码), 还能返回`);
+  } else {
+    failed = true;
+    console.error(`个人中心分组断言失败: ${JSON.stringify(prof)}`);
+  }
   const tabs = await evalIn(cdp, pages[0].sessionId, `document.querySelectorAll('.rail__btn').length`);
   if (process.env.E2E_SHOT_PROFILE) {
     await sleep(400);
     const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
     writeFileSync(process.env.E2E_SHOT_PROFILE, Buffer.from(s.data, 'base64'));
     console.log(`截图(个人中心): ${process.env.E2E_SHOT_PROFILE}`);
+  }
+  if (process.env.E2E_SHOT_PROFILE_SEC) {   // 人工看二级页 (CI 不设就不跑)
+    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; vm.openProfSection('media'); await vm.$nextTick(); return true; })()`);
+    await sleep(300);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_PROFILE_SEC, Buffer.from(s.data, 'base64'));
+    console.log(`截图(个人中心二级页): ${process.env.E2E_SHOT_PROFILE_SEC}`);
+    await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).closeProfSection(); return true; })()`);
   }
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goHome(); return true; })()`);
   await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.home')`, 10000, '切回会议首页');

@@ -123,6 +123,7 @@
         nickInput: '',      // 昵称输入框
         nickSaved: false,
         profErr: '',
+        profSection: '',    // 个人中心: '' = 分组列表, 否则是打开的某一组 (二级页)
         history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
         showAllHistory: false,
         joinOpen: false,    // "加入会议"弹窗: 房间号输入框只在弹窗里出现
@@ -229,6 +230,14 @@
       // 成员面板: 举手的排前面 (举手就是为了被看见)。sort 是稳定的, 同组里顺序不变。
       participantsSorted() {
         return [...this.participants].sort((a, b) => (b.hand ? 1 : 0) - (a.hand ? 1 : 0));
+      },
+      // 个人中心的二级页标题 / 列表里显示的当前主题名
+      profSectionName() {
+        return { me: '个人资料', security: '账号安全', display: '界面与显示',
+                 media: '媒体设备', notice: '通知与提示音' }[this.profSection] || '';
+      },
+      themeName() {
+        return { auto: '跟随系统', light: '浅色', dark: '深色' }[this.theme] || '跟随系统';
       },
       // 有对端的连接被判定成"差"就给一条横幅: 这种时候人往往先怀疑"是不是坏了"
       netPoor() {
@@ -473,12 +482,25 @@
       // 个人中心: 进这一屏就把摄像头关掉 (不用一直亮着), 回会议页会自动重开
       goProfile() {
         this.view = 'profile';
+        this.profSection = '';   // 每次进来都回到分组列表, 不要停在上次那一页
         this.nickInput = this.displayName || '';
         this.nickSaved = false;
         this.profErr = '';
         this.stopMedia();
         this.checkSession();
         this.loadMe();
+        this.loadDevices();   // "媒体设备"那页要设备清单 (首页进来时已经有了, 这里是兜底)
+      },
+      // 个人中心: 分组列表 -> 某一组 (就是二级页, 不上路由, 一个变量够了)
+      openProfSection(id) {
+        this.profErr = '';
+        if (id === 'me') this.nickInput = this.displayName || '';
+        this.profSection = id;
+        // 键盘用户: 打开二级页把焦点送到"返回"上, 不然焦点还留在已经消失的那一行上
+        this.$nextTick(() => { const el = this.$refs.profBack; if (el) el.focus(); });
+      },
+      closeProfSection() {
+        this.profSection = '';
       },
 
       async loadMe() {

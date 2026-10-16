@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=32">
+<link rel="stylesheet" href="app.css?v=34">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -193,6 +193,67 @@
       </aside>
 
       <main class="app__body profile">
+        <!-- 一级: 分组的设置列表 (点进去是二级页, 像手机上的"设置"那样)。
+             分组只影响"东西放哪", 每个功能还是原来那套状态和方法。 -->
+        <template v-if="!profSection">
+          <div class="setgroup">
+            <h2 class="setgroup__title">账号</h2>
+            <div class="setcard">
+              <button class="setrow" type="button" @click="openProfSection('me')">
+                <span class="setrow__main"><span class="setrow__name">个人资料</span>
+                  <span class="setrow__val">{{ displayName || '还没设昵称' }}</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+              <button class="setrow" type="button" @click="openProfSection('security')">
+                <span class="setrow__main"><span class="setrow__name">账号安全</span>
+                  <span class="setrow__val">{{ user }}</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="setgroup">
+            <h2 class="setgroup__title">通用</h2>
+            <div class="setcard">
+              <button class="setrow" type="button" @click="openProfSection('display')">
+                <span class="setrow__main"><span class="setrow__name">界面与显示</span>
+                  <span class="setrow__val">主题 · {{ themeName }}</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+              <button class="setrow" type="button" @click="openProfSection('media')">
+                <span class="setrow__main"><span class="setrow__name">媒体设备</span>
+                  <span class="setrow__val">摄像头 / 麦克风</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+              <button class="setrow" type="button" @click="openProfSection('notice')">
+                <span class="setrow__main"><span class="setrow__name">通知与提示音</span>
+                  <span class="setrow__val">{{ soundOn ? '提示音已开' : '提示音已关' }}</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="setgroup">
+            <h2 class="setgroup__title">会话</h2>
+            <div class="setcard">
+              <button class="setrow setrow--danger" type="button" @click="logout">
+                <span class="setrow__main"><span class="setrow__name">退出登录</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-logout"></use></svg>
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 二级: 某一组的具体设置 -->
+        <template v-else>
+          <div class="sethead">
+            <button class="sethead__back" type="button" ref="profBack" @click="closeProfSection()">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>返回
+            </button>
+            <h2 class="sethead__title">{{ profSectionName }}</h2>
+          </div>
+
+          <template v-if="profSection === 'me'">
         <div class="card">
           <h2 class="card__title">头像</h2>
           <div class="avrow">
@@ -221,12 +282,17 @@
             <button class="btn btn--primary" type="submit" :disabled="busy">保存昵称</button>
           </form>
         </div>
+          </template>
 
+          <template v-if="profSection === 'security'">
         <div class="card">
           <h2 class="card__title">登录名</h2>
           <p class="field__hint">登录名 <b>{{ user }}</b> 用来登录，不能改。</p>
+          <p class="field__hint">同一个账号同时只允许一个会话：在别的设备登录，这边会被挤下线。</p>
         </div>
+          </template>
 
+          <template v-if="profSection === 'display'">
         <div class="card">
           <h2 class="card__title">外观</h2>
           <div class="field">
@@ -239,7 +305,10 @@
             <p class="field__hint">选「跟随系统」时，系统切到深色这里也跟着切。</p>
           </div>
         </div>
+          </template>
 
+          <!-- 账号安全的第二张卡 (中间那张"外观"归"界面与显示", 所以这里再接一段) -->
+          <template v-if="profSection === 'security'">
         <div class="card">
           <h2 class="card__title">修改密码</h2>
           <form class="form" novalidate @submit.prevent="changePassword">
@@ -263,14 +332,40 @@
             <button class="btn btn--primary" type="submit" :disabled="busy">确认修改</button>
           </form>
         </div>
+          </template>
 
-        <div class="card">
-          <h2 class="card__title">退出登录</h2>
-          <p class="field__hint">退出后这台浏览器要重新登录，长期令牌也会一起吊销。</p>
-          <button class="btn btn--line" type="button" @click="logout">
-            <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-logout"></use></svg>退出登录
-          </button>
-        </div>
+          <template v-if="profSection === 'media'">
+            <div class="card">
+              <h2 class="card__title">媒体设备</h2>
+              <div class="devsel" v-if="devices.cam.length > 1">
+                <label class="field__label" for="f-cam">摄像头</label>
+                <select id="f-cam" class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
+                  <option value="">系统默认</option>
+                  <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
+                </select>
+              </div>
+              <div class="devsel" v-if="devices.mic.length > 1">
+                <label class="field__label" for="f-mic">麦克风</label>
+                <select id="f-mic" class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
+                  <option value="">系统默认</option>
+                  <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
+                </select>
+              </div>
+              <p class="field__hint" v-if="devices.cam.length > 1 || devices.mic.length > 1">
+                这里选的是"进房间用哪一个"，选完就记住了，下次开摄像头 / 麦克风时生效。
+              </p>
+              <p class="field__hint" v-else>这台机器上只找到一个摄像头 / 麦克风，没得选。</p>
+            </div>
+          </template>
+
+          <template v-if="profSection === 'notice'">
+            <div class="card">
+              <h2 class="card__title">通知与提示音</h2>
+              <label class="check"><input type="checkbox" v-model="soundOn"> 进 / 出、举手的提示音</label>
+              <p class="field__hint">关掉之后，有人进房、离开、举手都不会响（只影响这台浏览器）。</p>
+            </div>
+          </template>
+        </template>
       </main>
     </div>
 
@@ -539,12 +634,14 @@
         <label class="devsel" v-if="devices.cam.length > 1">
           <span class="field__label">摄像头</span>
           <select class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
+            <option value="">系统默认</option>
             <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
           </select>
         </label>
         <label class="devsel" v-if="devices.mic.length > 1">
           <span class="field__label">麦克风</span>
           <select class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
+            <option value="">系统默认</option>
             <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
           </select>
         </label>
@@ -766,7 +863,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=32"></script>
-<script src="app.js?v=32"></script>
+<script src="vendor/vue.global.prod.js?v=34"></script>
+<script src="app.js?v=34"></script>
 </body>
 </html>

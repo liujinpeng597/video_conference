@@ -921,6 +921,63 @@ button, input { font-family: inherit; }
   align-content: start;
 }
 .avrow { display: flex; align-items: center; gap: 16px; }
+/* 个人中心: 分组的设置列表 (一级) + 二级页的头 */
+.setgroup { display: flex; flex-direction: column; gap: 8px; }
+.setgroup__title { padding: 0 4px; font-size: 12px; font-weight: 500; color: var(--text-3); }
+.setcard {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.setrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s var(--ease);
+}
+.setrow:first-child { border-top: 0; }
+.setrow:hover { background: var(--fill); }
+.setrow__main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.setrow__name { flex: none; }
+.setrow__val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.setrow__go { flex: none; color: var(--text-3); }
+.setrow--danger .setrow__name, .setrow--danger .setrow__go { color: var(--danger-text); }
+.sethead { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.sethead__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sethead__back:hover { border-color: var(--brand); color: var(--brand); }
+.sethead__back .icon { transform: rotate(180deg); }   /* chevron-right 反过来当"返回"箭头用 */
+.sethead__title { font-size: 18px; font-weight: 600; }
 .avbig {
   display: grid;
   place-items: center;
