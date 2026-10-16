@@ -226,6 +226,17 @@
       },
       // 最近会议默认只露 3 条, 点"全部会议"展开
       shownHistory() { return this.showAllHistory ? this.history : this.history.slice(0, 3); },
+      // 成员面板: 举手的排前面 (举手就是为了被看见)。sort 是稳定的, 同组里顺序不变。
+      participantsSorted() {
+        return [...this.participants].sort((a, b) => (b.hand ? 1 : 0) - (a.hand ? 1 : 0));
+      },
+      // 有对端的连接被判定成"差"就给一条横幅: 这种时候人往往先怀疑"是不是坏了"
+      netPoor() {
+        return this.remotes.some((p) => {
+          const s = this.peerStats[p.id];
+          return s && s.q === 'poor';
+        });
+      },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -422,6 +433,8 @@
         this.loadHistory();   // 大厅里顺便把"最近会议"拉一份
         this.loadMe();        // 昵称 / 头像
         this.loadDevices();   // 设备下拉
+        // 邀请链接进来时弹窗已经开着 (见 prefillFromHash): 把光标放进房间号, 回车就进
+        if (this.joinOpen) this.$nextTick(() => { const el = this.$refs.roomInput; if (el) el.focus(); });
       },
 
       // "加入会议"那个大按钮: 弹出加入会议弹窗, 焦点落到房间号输入框
@@ -770,7 +783,11 @@
       // --------------------------------------------------------------- 房间
       prefillFromHash() {
         const m = /^#([a-z0-9-]{3,40})$/i.exec(location.hash || '');
-        if (m) this.roomInput = m[1].toLowerCase();
+        if (m) {
+          this.roomInput = m[1].toLowerCase();
+          // 邀请链接进来的: 直接把"加入会议"弹窗打开, 房间号已经填好了, 回车就进
+          this.joinOpen = true;
+        }
       },
 
       // 加入别人的会议 (必须填房间号; 加密会议还要密码)
@@ -1178,6 +1195,46 @@
         this.sendSignal(pid, 'mute-all', { one: true });   // one: 只是"请你自己静音", 不是全体
         this.flash('已请对方静音');
       },
+      // 请某个人开麦 (和"请静音"对称: 服务端不下发强制指令, 是对方自己那边打开)
+      askUnmute(pid) {
+        this.sendSignal(pid, 'mute-all', { one: true, on: true });
+        this.flash('已请对方开麦');
+      },
+      applyMicAsk(one) {
+        const track = this.media.stream && this.media.stream.getAudioTracks()[0];
+        if (track) track.enabled = true;
+        this.media.mic = true;
+        this.publishMic();   // 名单里也要变回"没静音"
+        this.flash(one ? '主持人请你开麦' : '主持人让大家开麦');
+      },
+      // 复制房间号 (顶栏那串数字点一下就行)
+      copyRoom() {
+        const text = this.room;
+        const done = () => this.flash('房间号已复制：' + text);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(() => this.flash('复制失败，手动记一下吧'));
+        } else {
+          this.flash('房间号：' + text);
+        }
+      },
+      // 聊天里 @全体: 只是往输入框里放个前缀 (服务端不理解 @, 就是个约定)
+      atAll() {
+        if (!/^@全体/.test(this.chatInput)) this.chatInput = '@全体 ' + this.chatInput;
+      },
+      // 把 "@全体" 切出来单独加粗。分段渲染, 不用 v-html —— 聊天内容是最脏的用户输入。
+      chatParts(text) {
+        const s = String(text || '');
+        const out = [];
+        let i = 0;
+        while (i < s.length) {
+          const j = s.indexOf('@全体', i);
+          if (j < 0) { out.push({ t: s.slice(i) }); break; }
+          if (j > i) out.push({ t: s.slice(i, j) });
+          out.push({ t: '@全体', at: true });
+          i = j + 3;
+        }
+        return out.length ? out : [{ t: '' }];
+      },
       // 布局: 宫格 -> 我最大 -> 主持人最大 -> 宫格 (点某一格放大也是同一套 focusPid)
       cycleLayout() {
         // 自己就是主持人时"我"和"主持人"是同一个人, 去重; 没有主持人也少一档
@@ -1522,8 +1579,12 @@
         }
         if (msg.kind === 'mute-all') {
           // 只认主持人发的; 一个人被单独静音和"全体静音"文案分开
-          const one = !!(msg.payload || {}).one;
-          if (msg.from === this.host) this.applyMuteAll(one ? '主持人让你静音了' : '主持人把所有人静音了');
+          const pl = msg.payload || {};
+          if (msg.from === this.host) {
+            // on = 反过来, 是"请你开麦"
+            if (pl.on) this.applyMicAsk(!!pl.one);
+            else this.applyMuteAll(pl.one ? '主持人让你静音了' : '主持人把所有人静音了');
+          }
           return;
         }
         const state = this.ensureCall(msg.from);

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=31">
+<link rel="stylesheet" href="app.css?v=32">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -278,7 +278,8 @@
     <div v-else key="room" class="app app--room">
       <header class="topbar">
         <div class="topbar__left">
-          <code class="roomcode">{{ room }}</code>
+          <button class="roomcode" type="button" @click="copyRoom" title="点击复制房间号"
+                  aria-label="复制房间号">{{ room }}</button>
           <span class="timer">{{ elapsed }}</span>
         </div>
         <p class="roomtoast" role="status" v-if="notice">{{ notice }}</p>
@@ -307,6 +308,11 @@
           <svg class="icon" aria-hidden="true"><use href="#ic-microphone"></use></svg>
           浏览器拦住了自动播放，点这里开启对方的声音
         </button>
+        <!-- 连接质量判定成"差"时给一条横幅: 不然"卡 / 听不清"会被当成"软件坏了" -->
+        <p class="netwarn" role="status" v-if="netPoor">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>
+          你的网络好像不太稳，对方可能听不清、画面也会糊 —— 试试靠近路由器或者换成有线
+        </p>
 
         <div class="grid" :data-n="tiles" :class="{ 'is-focus': focusPid }">
           <!-- 整格是一颗"放大/缩小"的按钮: 键盘也要能按 (Tab 到它, 回车/空格放大) -->
@@ -372,13 +378,15 @@
           <div class="chat__msg" v-for="m in chatMessages" :key="m.id"
                :class="{ 'chat__msg--mine': m.from === myPid }">
             <p class="chat__who">{{ m.from === myPid ? '我' : m.name }}</p>
-            <p class="chat__text">{{ m.text }}</p>
+            <!-- 分段渲染把 @全体 挑出来加粗: 仍是纯文本节点, 不用 v-html -->
+            <p class="chat__text"><template v-for="(seg, i) in chatParts(m.text)" :key="i"><b class="chat__at" v-if="seg.at">{{ seg.t }}</b><template v-else>{{ seg.t }}</template></template></p>
           </div>
         </div>
 
         <p class="chat__err" role="alert" v-if="chatError">{{ chatError }}</p>
 
         <form class="chat__form" @submit.prevent="sendChat">
+          <button class="chat__atbtn" type="button" @click="atAll" title="提醒所有人" aria-label="提醒所有人">＠全体</button>
           <input class="input chat__input" type="text" v-model="chatInput" maxlength="500"
                  placeholder="输入消息，回车发送" autocomplete="off" aria-label="消息内容">
           <button class="chat__send" type="submit" :disabled="!chatInput.trim() || chatSending" aria-label="发送">
@@ -396,7 +404,8 @@
         </header>
 
         <div class="plist">
-          <div class="prow" v-for="m in participants" :key="m.id">
+          <!-- 举手的排前面 (举手就是为了被看见) -->
+          <div class="prow" v-for="m in participantsSorted" :key="m.id" :class="{ 'prow--hand': m.hand }">
             <span class="prow__av" aria-hidden="true">
               <img v-if="m.me ? avatarSrc : avOk(m)" :src="m.me ? avatarSrc : avatarUrl(m)" alt="">
               <template v-else>{{ initial(m.name) }}</template>
@@ -411,6 +420,7 @@
             <span class="prow__act">
               <button class="btn btn--text" type="button" v-if="m.me" @click="renameInput = m.name; renaming = !renaming">改名</button>
               <button class="btn btn--text" type="button" v-if="amHost && !m.me && m.mic" @click="muteOne(m.id)">静音</button>
+              <button class="btn btn--text" type="button" v-if="amHost && !m.me && !m.mic" @click="askUnmute(m.id)">开麦</button>
               <button class="btn btn--text" type="button" v-if="amHost && !m.me" @click="kickMember(m.id)">移出</button>
             </span>
           </div>
@@ -756,7 +766,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=31"></script>
-<script src="app.js?v=31"></script>
+<script src="vendor/vue.global.prod.js?v=32"></script>
+<script src="app.js?v=32"></script>
 </body>
 </html>

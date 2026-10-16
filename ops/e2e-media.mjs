@@ -1185,6 +1185,88 @@ try {
   if (muted) console.log('全体静音: 主持人一键, 对端被静音');
   else { failed = true; console.error('全体静音断言失败: 对端没被静音'); }
 
+  // 小碎功能其一: 请对方开麦 (和"请静音"对称) + 顶栏房间号是个能复制的按钮
+  await activate(cdp, pages[1].sessionId);
+  const micPeer = await evalIn(cdp, pages[1].sessionId, `(${VM})?.myPid`);
+  await activate(cdp, pages[0].sessionId);
+  const bits = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const out = {};
+      out.roomBtn = [...document.querySelectorAll('.topbar .roomcode')].map((b) => b.tagName).join('');
+      vm.copyRoom();
+      await new Promise((r) => setTimeout(r, 300));   // 写剪贴板是异步的 (拿不到权限会走降级文案)
+      out.copied = /房间号|复制/.test(vm.notice || '');
+      vm.askUnmute(${JSON.stringify(micPeer)});
+      out.asked = /开麦/.test(vm.notice || '');
+      return out;
+    })()`);
+  let micBack = false;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    if (await evalIn(cdp, pages[1].sessionId, `(${VM})?.media?.mic === true`)) { micBack = true; break; }
+    await sleep(400);
+  }
+  if (bits.roomBtn === 'BUTTON' && bits.copied && bits.asked && micBack) {
+    console.log('小碎功能: 顶栏房间号是按钮 (点了会复制); 主持人请对方开麦 -> 对方麦克风真的打开了');
+  } else {
+    failed = true;
+    console.error(`请开麦 / 复制房间号断言失败: ${JSON.stringify({ bits, micBack })}`);
+  }
+
+  // 小碎功能其二: 聊天 @全体 会被挑出来单独加粗 (但整条仍是纯文本, 不能用 v-html)
+  const atText = '@全体 开会了';
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId,
+    `(async () => { const vm = ${VM}; vm.chatInput = ${JSON.stringify(atText)}; await vm.sendChat(); return true; })()`);
+  let atGot = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    atGot = await evalIn(cdp, pages[1].sessionId, `(async () => {
+        const vm = ${VM};
+        if (!vm.chatOpen) vm.toggleChat();
+        await vm.$nextTick();
+        return { at: [...document.querySelectorAll('.chat__at')].map((e) => e.textContent),
+                 texts: [...document.querySelectorAll('.chat__text')].map((e) => e.textContent) };
+      })()`);
+    if (atGot && atGot.texts.includes(atText)) break;
+    await sleep(400);
+  }
+  if (atGot && atGot.at.includes('@全体') && atGot.texts.includes(atText)) {
+    console.log('小碎功能: 聊天 @全体 单独加粗, 整条消息仍是纯文本');
+  } else {
+    failed = true;
+    console.error(`聊天 @全体 断言失败: ${JSON.stringify(atGot)}`);
+  }
+
+  // 小碎功能其三: 举手的人排到成员面板最前面
+  await activate(cdp, pages[1].sessionId);
+  await evalIn(cdp, pages[1].sessionId,
+    `(async () => { const vm = ${VM}; if (!vm.myHand) await vm.toggleHand(); return vm.myHand; })()`);
+  let handSort = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[0].sessionId);
+    handSort = await evalIn(cdp, pages[0].sessionId, `(async () => {
+        const vm = ${VM};
+        if (!vm.membersOpen) vm.toggleMembers();
+        await vm.$nextTick();
+        const rows = [...document.querySelectorAll('.prow')];
+        return { first: (rows[0] && rows[0].className) || '', hands: rows.filter((r) => r.className.includes('prow--hand')).length };
+      })()`);
+    if (handSort && handSort.hands > 0) break;
+    await sleep(400);
+  }
+  if (handSort && handSort.hands >= 1 && handSort.first.includes('prow--hand')) {
+    console.log('小碎功能: 举手的人在成员面板里排到了第一行 (那一行也标了颜色)');
+  } else {
+    failed = true;
+    console.error(`举手排序断言失败: ${JSON.stringify(handSort)}`);
+  }
+  // 收尾: 放下手 + 关掉成员面板, 别影响后面的用例
+  await activate(cdp, pages[1].sessionId);
+  await evalIn(cdp, pages[1].sessionId, `(async () => { const vm = ${VM}; if (vm.myHand) await vm.toggleHand(); return true; })()`);
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(() => { const vm = ${VM}; if (vm.membersOpen) vm.toggleMembers(); if (vm.chatOpen) vm.toggleChat(); return true; })()`);
+
   // 会议锁定: 主持人锁上 -> 对端 state 里 should 看到 locked=true
   await activate(cdp, pages[0].sessionId);
   await evalIn(cdp, pages[0].sessionId,
@@ -1322,6 +1404,27 @@ try {
   } else {
     failed = true;
     console.error(`挤下线断言失败: ${JSON.stringify(out)}`);
+  }
+
+  // 小碎功能其四: 带邀请链接 (#房间号) 进来 -> 自动把"加入会议"弹窗打开, 房间号已经填好
+  await activate(cdp, pages[2].sessionId);
+  // 直接改 hash (同文档跳转不会重新加载, prefillFromHash 也就不会跑), 再 reload 一次让它跑
+  await evalIn(cdp, pages[2].sessionId, `(() => { location.hash = '#123456789'; return location.href; })()`);
+  await sleep(200);
+  await cdp.send('Page.reload', {}, pages[2].sessionId);
+  await waitIn(cdp, pages[2].sessionId,
+               `!!(${VM}) && (${VM}).view === 'home'`, 20000, '邀请链接标签页进入大厅');
+  const invite = await evalIn(cdp, pages[2].sessionId, `(async () => {
+      const vm = ${VM};
+      await vm.$nextTick();
+      return { open: vm.joinOpen, room: vm.roomInput, modal: !!document.querySelector('.modal #f-room'),
+               focused: document.activeElement === document.querySelector('.modal #f-room') };
+    })()`);
+  if (invite.open && invite.room === '123456789' && invite.modal && invite.focused) {
+    console.log(`邀请链接: #${invite.room} 进来直接弹出入会窗口, 房间号已填好且光标已就位`);
+  } else {
+    failed = true;
+    console.error(`邀请链接断言失败: ${JSON.stringify(invite)}`);
   }
 
   if (failed) {

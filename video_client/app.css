@@ -105,7 +105,8 @@
 :root[data-theme="dark"] ::selection { background: #2a4a7a; }
 :root[data-theme="dark"] .input:hover { border-color: var(--line-strong); }
 :root[data-theme="dark"] .chip--lock { border-color: #6b5520; background: #362c12; color: #f0c000; }
-:root[data-theme="dark"] .audiohint { border-color: #5a4a1f; background: #33290f; color: #e8c46a; }
+:root[data-theme="dark"] .audiohint,
+:root[data-theme="dark"] .netwarn { border-color: #5a4a1f; background: #33290f; color: #e8c46a; }
 :root[data-theme="dark"] .audiohint:hover { background: #3d3113; }
 :root[data-theme="dark"] .modal__mask { background: rgb(0 0 0 / .6); }
 :root[data-theme="dark"] .modal__card { box-shadow: 0 18px 50px rgb(0 0 0 / .55); }
@@ -429,7 +430,20 @@ button, input { font-family: inherit; }
 .topbar__left { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
 .topbar__right { display: flex; align-items: center; gap: 12px; }
 
-.roomcode { font-family: var(--mono); font-size: 14px; letter-spacing: .02em; }
+/* 顶栏的房间号: 点一下就复制 (是 button, 所以把默认样式抹平) */
+.roomcode {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: .02em;
+  cursor: pointer;
+}
+.roomcode:hover { border-color: var(--line-strong); background: var(--fill); }
 .timer {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
@@ -782,6 +796,24 @@ button, input { font-family: inherit; }
 }
 .audiohint:hover { background: #fff2d1; }
 
+/* 网络差的横幅: 和自动播放提示条同一外观 (都是"要注意, 但不是报错") */
+.netwarn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 1000px;
+  margin-inline: auto;
+  padding: 8px 16px;
+  border: 1px solid #ffe0b2;
+  border-radius: var(--r-lg);
+  background: #fff8e6;
+  color: #8a5a00;
+  font-size: 13px;
+}
+
 /* 名字贴条: 视频块上的必要信息 (这是谁), 不是装饰 */
 .tile__tag {
   position: absolute;
@@ -1004,6 +1036,21 @@ button, input { font-family: inherit; }
   border-top: 1px solid var(--line);
 }
 .chat__input { flex: 1; min-width: 0; }
+/* 聊天里的"提醒所有人": 只往输入框放个 @全体 前缀 (服务端不认识 @, 就是个约定) */
+.chat__atbtn {
+  flex: none;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat__atbtn:hover { border-color: var(--brand); color: var(--brand); }
+.chat__at { color: var(--brand); font-weight: 600; }
 .chat__send {
   flex: none;
   display: grid;
@@ -1047,6 +1094,8 @@ button, input { font-family: inherit; }
 }
 .prow { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
 .prow:first-child { border-top: 0; }
+/* 举手的人那一行标一下颜色 (名单里他们也排在最前面) */
+.prow--hand { border-radius: var(--r-sm); background: var(--brand-weak); }
 .prow__av {
   display: grid;
   place-items: center;
