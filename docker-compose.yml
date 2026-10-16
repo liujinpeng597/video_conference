@@ -166,6 +166,10 @@ services:
   # 对外不发布端口: 上传/下载都走后端 (鉴权 + 按账号隔离), 浏览器不直连 MinIO。
   minio:
     image: ${MINIO_IMAGE:-minio/minio:latest}
+    # 先放在 storage 这个 profile 里: 本机拉不到 minio 镜像时, 默认的
+    # `docker compose up -d` 不该因为一个可选组件失败。镜像能拉了就把这两行删掉,
+    # 让它回到默认栈 (录制要用它)。
+    profiles: ["storage"]
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?没设置 MINIO_ROOT_USER, 先 cp .env.example .env 并填上}
@@ -182,6 +186,7 @@ services:
   # 一次性把桶建出来 (幂等, 跑完就退)。不依赖健康检查: mc 自己重试着等 minio 起来。
   minio-init:
     image: ${MINIO_IMAGE:-minio/minio:latest}
+    profiles: ["storage"]
     depends_on:
       - minio
     entrypoint: ["/bin/sh", "-c"]
