@@ -133,6 +133,7 @@
         createPass: false,  // 勾了才建加密房间
         createPassInput: '',
         roomEncrypted: false,   // 当前这个会议是加密的 (顶栏显示一枚"已加密"标签)
+        spot: '',               // 主持人设的"重点"是谁 (pid); 空 = 没设
         todayDay: '',
         todayWeek: '',
 
@@ -716,6 +717,8 @@
         this.joinedAt = 0;
         this.sigSince = 0;
         this.lastHandledSeq = 0;
+        this.spot = '';
+        this.focusPid = '';
         sessionStorage.removeItem(STORE_TOKEN);
         sessionStorage.removeItem(STORE_USER);
         localStorage.removeItem(STORE_REMEMBER);  // 但用户名留着, 下次少打一遍
@@ -851,6 +854,7 @@
           this.avFail = {};       // 头像加载失败的记录, 换房间要清
           this.membersOpen = false;
           this.focusPid = '';
+          this.spot = '';          // 上一场的"重点"不带进这一场 (服务端那边也是新房间新字段)
           this.startLevelTimer();
           this.view = 'room';
           this.joinOpen = false;   // 进房之后弹窗收掉
@@ -902,6 +906,32 @@
           const me = r.participants.find((p) => p.me);
           if (me) this.myPid = me.id;
           this.noteArrivals(r.participants);   // 有人进/出/举手 -> 提示音
+        }
+        // 主持人设的"重点": 变了才动我的视图 —— 这样被点名之后我还能自己点别的格看,
+        // 直到主持人再设一次。取消时回宫格。
+        const spot = typeof r.spot === 'string' ? r.spot : '';
+        if (spot !== this.spot) {
+          this.spot = spot;
+          this.focusPid = spot;
+          if (spot) this.flash('主持人把' + this.nameOfPid(spot) + '设成了重点');
+        }
+      },
+      // pid -> 显示名 (找不到就"某人")
+      nameOfPid(pid) {
+        if (!pid) return '';
+        if (pid === this.myPid) return '你';
+        const p = this.participants.find((x) => x.id === pid);
+        return p ? p.name : '某人';
+      },
+      // 主持人设"重点" (pid 传空 = 取消): 服务端存房间字段, 所有人下一拍一起切
+      async setSpot(pid) {
+        try {
+          await this.authed('POST', '/api/rooms/spot', { pid: pid || '' });
+          this.flash(pid ? ('已把' + this.nameOfPid(pid) + '设为重点') : '已取消重点');
+          this.scheduleSync(0);   // 不等下一拍, 立刻同步回来 (自己也跟着切)
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.flash(err.message || '设重点失败');
         }
       },
 
@@ -1446,6 +1476,8 @@
         this.resetChat();
         this.view = 'home';
         this.errors = { form: msg };
+        this.spot = '';        // 离开房间就把"重点"忘了 (下一场是新的)
+        this.focusPid = '';
         // 被动退出之后人在大厅, 大厅不发别的请求 —— 得把"会话还在不在"这条心跳重新接上,
         // 不然这个标签页会一直"看起来还登着", 连账号在别处登录了都不会发现 (goHome 里也一样)。
         this.checkSession();
@@ -1733,6 +1765,8 @@
         this.lastHandledSeq = 0;
         this.resetChat();
         this.view = 'home';
+        this.spot = '';        // 离开房间就把"重点"忘了 (下一场是新的)
+        this.focusPid = '';
       },
 
       copyInvite() {

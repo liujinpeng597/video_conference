@@ -79,7 +79,7 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 // *hostPid 是主持人的 pid (没有主持人时为空串) —— 主持人 = 建房的人。
 bool sync(const std::string& token, uint64_t since, std::string* room,
           std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
-          bool* locked, std::string* err);
+          bool* locked, std::string* spotPid, std::string* err);
 
 enum class Send { Delivered, NoSuchPeer, NotInRoom, Error };
 
@@ -136,6 +136,12 @@ Lock setLocked(const std::string& token, bool locked, std::string* err);
 // 而不是误报"房间状态没了(服务端重启过)" —— 和踢人的 kicked:<令牌> 是一套路子。
 enum class End { Ok, NotHost, NotInRoom, Error };
 End endRoom(const std::string& token, std::string* err);
+
+// 主持人"设为重点": 把某个人设成全场一起放大的那一格 (再设一次空 pid = 取消)。
+// 存房间 hash 的 @spot 字段 (存的是令牌, 不是 pid —— pid 每次进房都会换, 刷新一下就找不到了),
+// 所有人下一拍 sync 都能拿到, 包括之后才进来的人。只有主持人能设。
+enum class Spot { Ok, NotHost, NotInRoom, NoSuchPeer, Error };
+Spot setSpot(const std::string& token, const std::string& targetPid, std::string* err);
 
 bool leave(const std::string& token, std::string* err);
 

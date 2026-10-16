@@ -696,8 +696,9 @@ Resp apiRoomsState(const Request& req) {
     std::vector<presence::Signal> msgs;
     std::string hostPid;
     bool locked = false;
+    std::string spotPid;
     std::string err;
-    if (!presence::sync(req.token, since, &room, &members, &msgs, &hostPid, &locked, &err)) {
+    if (!presence::sync(req.token, since, &room, &members, &msgs, &hostPid, &locked, &spotPid, &err)) {
         return errJson(500, "同步房间状态失败：" + err);
     }
 
@@ -767,6 +768,7 @@ Resp apiRoomsState(const Request& req) {
                   ",\"participants\":" + peersJson(members, req.token) +
                   ",\"host\":" + json::quote(hostPid) +
                   ",\"locked\":" + (locked ? "true" : "false") +
+                  ",\"spot\":" + json::quote(spotPid) +
                   ",\"removed\":" + (removed ? "true" : "false") +
                   ",\"ended\":" + (ended ? "true" : "false") +
                   ",\"seq\":" + std::to_string(seq) +
@@ -934,6 +936,30 @@ Resp apiRoomsLock(const Request& req) {
 }
 
 // 主持人结束整场会议: 所有人 (含自己) 一起被请出, 房间拆掉。
+// 主持人设"重点": 全场一起把某一格放大 (pid 传空 = 取消)。
+Resp apiRoomsSpot(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string pid;                  // 允许为空 = 取消
+    json::getString(req.body, "pid", &pid);
+
+    std::string err;
+    switch (presence::setSpot(req.token, pid, &err)) {
+        case presence::Spot::Ok:
+            return okJson(std::string("{\"ok\":true,\"spot\":") + json::quote(pid) + "}");
+        case presence::Spot::NotHost:
+            return errJson(403, "只有主持人能设重点");
+        case presence::Spot::NoSuchPeer:
+            return errJson(404, "房间里没有这个人");
+        case presence::Spot::NotInRoom:
+            return errJson(409, "你还没进房间");
+        default:
+            return errJson(500, "设重点失败：" + err);
+    }
+}
+
 // 每个人的会话被删之前都留了"会议被结束"的标记, 所以各自下一拍轮询就能拿到准确原因。
 Resp apiRoomsEnd(const Request& req) {
     std::string user;
@@ -1255,6 +1281,10 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/end") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsEnd(req);
+    }
+    if (req.path == "/api/rooms/spot") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRoomsSpot(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

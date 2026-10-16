@@ -967,6 +967,44 @@ call POST /api/rooms/leave '{}' "$TOKEN_END2"
 call POST /api/rooms/leave '{}' "$TOKEN_END"
 
 echo
+echo "---- 设为重点 (主持人) ----"
+# 主持人把某个人设成"全场一起放大的那一格"; 存房间 hash 的 @spot (存令牌, 不是 pid), 只有主持人能设。
+USER_SP="sp$SUF"
+USER_SP2="spb$SUF"
+call POST /api/register "{\"username\":\"$USER_SP\",\"password\":\"hunter2\"}"
+TOKEN_SP=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_SP2\",\"password\":\"hunter2\"}"
+TOKEN_SP2=$(jstr token)
+call POST /api/rooms/enter '{}' "$TOKEN_SP"
+SPROOM=$(jstr room)
+call POST /api/rooms/enter "{\"room\":\"$SPROOM\"}" "$TOKEN_SP2"
+check "设重点用例: 两个人都进房了" "2" "$(jcount name)"
+call GET /api/rooms/state '' "$TOKEN_SP"
+SP_PID2=$(jpid false)
+check "拿到对端的 pid" "1" "$([ -n "$SP_PID2" ] && echo 1 || echo 0)"
+
+call POST /api/rooms/spot "{\"pid\":\"$SP_PID2\"}" "$TOKEN_SP2"
+check "非主持人设重点 403" "403" "$(status)"
+call POST /api/rooms/spot "{\"pid\":\"$SP_PID2\"}" "$TOKEN_SP"
+check "主持人设重点 200" "200" "$(status)"
+call GET /api/rooms/state '' "$TOKEN_SP"
+check "自己看到重点是谁" "$SP_PID2" "$(jstr spot)"
+call GET /api/rooms/state '' "$TOKEN_SP2"
+check "被点名的人也看到自己是重点" "$SP_PID2" "$(jstr spot)"
+
+call POST /api/rooms/spot '{"pid":"deadbeef"}' "$TOKEN_SP"
+check "设一个不在房间里的人 404" "404" "$(status)"
+call POST /api/rooms/spot '{}' "$TOKEN_SP"
+check "取消重点 200" "200" "$(status)"
+call GET /api/rooms/state '' "$TOKEN_SP"
+check "取消后 spot 为空" "" "$(jstr spot)"
+call POST /api/rooms/spot '{"pid":""}'
+check "未登录设重点 401" "401" "$(status)"
+
+call POST /api/rooms/leave '{}' "$TOKEN_SP2"
+call POST /api/rooms/leave '{}' "$TOKEN_SP"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"

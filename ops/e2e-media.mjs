@@ -1206,6 +1206,38 @@ try {
     console.error(`主持人断言失败: ${JSON.stringify({ host0, host1 })}`);
   }
 
+  // 主持人"设为重点": 全场一起把那一格放大 (取消就回宫格)
+  await activate(cdp, pages[2].sessionId);
+  const spotTarget = await evalIn(cdp, pages[2].sessionId, `(${VM})?.myPid`);
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(${VM}).setSpot(${JSON.stringify(spotTarget)})`);
+  let spotSeen = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    spotSeen = await evalIn(cdp, pages[1].sessionId,
+      `({ focus: (${VM})?.focusPid, spot: (${VM})?.spot,
+          tiles: document.querySelectorAll('.tile--focus').length,
+          badge: [...document.querySelectorAll('.tile__spot')].map((e) => e.textContent) })`);
+    if (spotSeen && spotSeen.focus === spotTarget) break;
+    await sleep(400);
+  }
+  await activate(cdp, pages[0].sessionId);
+  await evalIn(cdp, pages[0].sessionId, `(${VM}).setSpot('')`);   // 取消
+  let spotCleared = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[1].sessionId);
+    spotCleared = await evalIn(cdp, pages[1].sessionId, `({ focus: (${VM})?.focusPid, spot: (${VM})?.spot })`);
+    if (spotCleared && spotCleared.focus === '') break;
+    await sleep(400);
+  }
+  if (spotTarget && spotSeen && spotSeen.focus === spotTarget && spotSeen.tiles === 1 &&
+      spotSeen.badge.includes('重点') && spotCleared && spotCleared.focus === '' && spotCleared.spot === '') {
+    console.log('设为重点: 主持人一点, 别人的画面跟着切到那一格 (贴条标"重点"); 取消就回宫格');
+  } else {
+    failed = true;
+    console.error(`设为重点断言失败: ${JSON.stringify({ spotTarget, spotSeen, spotCleared })}`);
+  }
+
   // 全体静音: 主持人发一条信令, 各端把自己静音
   await activate(cdp, pages[0].sessionId);
   await evalIn(cdp, pages[0].sessionId, `(${VM}).muteAll()`);

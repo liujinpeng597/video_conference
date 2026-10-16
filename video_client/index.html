@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=34">
+<link rel="stylesheet" href="app.css?v=35">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -421,7 +421,7 @@
               <p>{{ media.stream ? '摄像头关着' : '没有摄像头画面' }}</p>
             </div>
             <span class="tile__hand" v-if="myHand" title="已举手" aria-label="已举手">✋</span>
-            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span><b class="tile__you">你</b>{{ myName }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
+            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avatarSrc" :src="avatarSrc" alt="">{{ avatarSrc ? '' : initial(myName) }}</span><b class="tile__you">你</b>{{ myName }}<span class="tile__host" v-if="amHost">主持人</span><span class="tile__spot" v-if="spot === myPid">重点</span><span class="tile__muted" v-if="sharing">正在共享屏幕</span><span class="tile__muted" v-else-if="!micOn">已静音</span></p>
           </article>
 
           <article class="tile" v-for="p in remotes" :key="p.id" tabindex="0" role="button"
@@ -439,7 +439,7 @@
                     title="移出会议" @click.stop="kickMember(p.id)">
               <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-user-off"></use></svg>
             </button>
-            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="">{{ avOk(p) ? '' : initial(p.name) }}</span>{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__share" v-if="p.share">共享中</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
+            <p class="tile__tag"><span class="tag__av" aria-hidden="true"><img v-if="avOk(p)" :src="avatarUrl(p)" alt="">{{ avOk(p) ? '' : initial(p.name) }}</span>{{ p.name }}<span class="tile__host" v-if="p.id === host">主持人</span><span class="tile__spot" v-if="spot === p.id">重点</span><span class="tile__share" v-if="p.share">共享中</span><span class="tile__muted" v-if="peerState[p.id] !== 'connected'">{{ peerHint(p.id) }}</span><span class="tile__muted" v-else-if="!p.mic">已静音</span></p>
             <span class="tile__q" :class="peerStats[p.id] ? 'tile__q--' + peerStats[p.id].q : ''"
                   v-if="qText(p.id)" :title="qTitle(p.id)">{{ qText(p.id) }}</span>
           </article>
@@ -516,6 +516,9 @@
               <button class="btn btn--text" type="button" v-if="m.me" @click="renameInput = m.name; renaming = !renaming">改名</button>
               <button class="btn btn--text" type="button" v-if="amHost && !m.me && m.mic" @click="muteOne(m.id)">静音</button>
               <button class="btn btn--text" type="button" v-if="amHost && !m.me && !m.mic" @click="askUnmute(m.id)">开麦</button>
+              <button class="btn btn--text" type="button" v-if="amHost" @click="setSpot(spot === m.id ? '' : m.id)">
+                {{ spot === m.id ? '取消重点' : '设为重点' }}
+              </button>
               <button class="btn btn--text" type="button" v-if="amHost && !m.me" @click="kickMember(m.id)">移出</button>
             </span>
           </div>
@@ -863,7 +866,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=34"></script>
-<script src="app.js?v=34"></script>
+<script src="vendor/vue.global.prod.js?v=35"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>

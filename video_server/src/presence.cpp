@@ -32,6 +32,7 @@ constexpr char kSep = '\x1f';
 constexpr char kHostField[] = "@host";
 constexpr char kLockField[] = "@locked";   // "1" = 会议锁定, 只有主持人能进
 constexpr char kPassField[] = "@pass";     // 会议密码的 Argon2id 哈希; 有这个字段 = 加密房间
+constexpr char kSpotField[] = "@spot";     // 主持人设的"重点"是谁 (存令牌), 空 = 没设
 
 int64_t nowMs() {
     using namespace std::chrono;
@@ -215,6 +216,9 @@ Enter enter(const std::string& token, const std::string& user, const std::string
         if (!redis::del(chatSeqKey(room), err)) return Enter::Error;
         // 建房的人就是主持人 (房间 hash 里一个特殊字段, 跟着房间 TTL 一起过期)
         if (!redis::hSet(roomKey(room), kHostField, token, err)) return Enter::Error;
+        // 新房间: 清掉可能残留的"重点" (上一拨人的设置不该带到这一场)
+        std::string spotIgnore;
+        redis::hDel(roomKey(room), kSpotField, &spotIgnore);
         // 只有全新的房间才在这里定密码 (非空 = 加密, 空 = 普通)。
         // 沿用老房间 (@pass 还在) 的情况在上面已经验过了, 不覆盖它。
         if (passHash.empty() && !pass.empty()) {
@@ -249,12 +253,13 @@ Enter enter(const std::string& token, const std::string& user, const std::string
 
 bool sync(const std::string& token, uint64_t since, std::string* room,
           std::vector<Member>* members, std::vector<Signal>* msgs, std::string* hostPid,
-          bool* locked, std::string* err) {
+          bool* locked, std::string* spotPid, std::string* err) {
     room->clear();
     members->clear();
     msgs->clear();
     hostPid->clear();
     *locked = false;
+    spotPid->clear();
 
     Me me;
     if (!whereAmI(token, &me, err)) return err->empty();  // 不在房间 = 正常情况
@@ -309,6 +314,22 @@ bool sync(const std::string& token, uint64_t since, std::string* room,
         if (f.name == kLockField) {
             *locked = (f.value == "1");
             break;
+        }
+    }
+    // "重点"同一个套路: 存的是令牌, 下发给前端时翻译成 pid (人已经走了就留空)
+    std::string spotToken;
+    for (const redis::Field& f : fields) {
+        if (f.name == kSpotField) {
+            spotToken = f.value;
+            break;
+        }
+    }
+    if (!spotToken.empty()) {
+        for (const Member& m : *members) {
+            if (m.token == spotToken && m.live) {
+                *spotPid = m.pid;
+                break;
+            }
         }
     }
     if (!hostToken.empty()) {
@@ -495,6 +516,34 @@ Lock setLocked(const std::string& token, bool locked, std::string* err) {
     if (!redis::hSet(roomKey(me.room), kLockField, locked ? "1" : "0", err)) return Lock::Error;
     if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Lock::Error;
     return Lock::Ok;
+}
+
+// 主持人设"重点": 谁被设成重点, 所有人的画面就一起切到他。
+// 存令牌不存 pid —— pid 每次进房都换, 用 pid 存的话被点名的人一刷新就找不到自己了。
+Spot setSpot(const std::string& token, const std::string& targetPid, std::string* err) {
+    Me me;
+    if (!whereAmI(token, &me, err)) return err->empty() ? Spot::NotInRoom : Spot::Error;
+
+    std::vector<redis::Field> fields;
+    if (!redis::hGetAll(roomKey(me.room), &fields, err)) return Spot::Error;
+
+    const int64_t now = nowMs();
+    std::string hostToken;
+    std::string spotToken;   // 目标人的令牌; targetPid 为空 = 取消, 不用找
+    for (const redis::Field& f : fields) {
+        if (f.name == kHostField) { hostToken = f.value; continue; }
+        if (!f.name.empty() && f.name[0] == '@') continue;   // @pass / @spot / @hand: ... 不是成员
+        if (targetPid.empty()) continue;
+        const Member m = parseMember(f.name, f.value, now);
+        if (m.live && m.pid == targetPid) spotToken = m.token;
+    }
+    if (hostToken != token) return Spot::NotHost;                 // 只有主持人能设重点
+    if (!targetPid.empty() && spotToken.empty()) return Spot::NoSuchPeer;
+
+    // 取消时写空串: 字段还在 (不会被其他路径当默认值覆盖), sync 读出来是空 -> 前端回宫格
+    if (!redis::hSet(roomKey(me.room), kSpotField, spotToken, err)) return Spot::Error;
+    if (!redis::expire(roomKey(me.room), kKeyTtlSec, err)) return Spot::Error;
+    return Spot::Ok;
 }
 
 End endRoom(const std::string& token, std::string* err) {

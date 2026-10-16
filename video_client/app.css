@@ -1136,6 +1136,15 @@ button, input { font-family: inherit; }
   color: var(--on-brand);
   font-size: 11px;
 }
+/* 被主持人设成"重点"的那一格: 贴条上标一下, 不然大家不知道自己画面怎么变了 */
+.tile__spot {
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: #f0a020;
+  color: #1d2129;
+  font-size: 11px;
+  font-weight: 600;
+}
 /* 贴条上的东西多了不换行 (换行会把画面格顶变形), 超出裁掉 */
 .tile__tag { flex-wrap: nowrap; overflow: hidden; }
 
