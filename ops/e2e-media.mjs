@@ -675,12 +675,19 @@ try {
       await vm.$nextTick();
       const rows = document.querySelectorAll('.prow').length;
       const acts = document.querySelectorAll('.prow__act .btn').length;
+      // 网络诊断: 我自己那行 + 每个对端一行, 且已经能判断直连还是中继
+      const diagRows = document.querySelectorAll('.diag__row').length;
+      const diagMine = vm.diagMine;
+      const remote = vm.remotes[0];
+      const diagPeer = remote ? vm.diagLine(remote) : '';
+      const peerPath = remote && vm.peerStats[remote.id] ? vm.peerStats[remote.id].path : '';
       vm.toggleMembers();
       await vm.$nextTick();
       const seq = [];
       for (let i = 0; i < 3; i++) { vm.cycleLayout(); seq.push(vm.focusPid); }
       vm.focusPid = '';
-      return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen };
+      return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen,
+               diagRows, diagMine, diagPeer, peerPath };
     })()`);
   {   // 会中改名: 走真实 UI 路径 (点"改名" -> 填 -> 提交), 房间里要立刻变
     const rn = await evalIn(cdp, pages[0].sessionId, `(async () => {
@@ -777,11 +784,13 @@ try {
     })()`);
   const cycles = ui.seq.some((x) => x === '') && ui.seq.some((x) => x !== '');
   const hostMode = ui2.seq[0] === ui2.mine && ui2.seq[1] === ui2.host && ui2.seq[2] === '' && !!ui2.host;
-  if (ui.rows === 3 && ui.acts >= 1 && cycles && hostMode) {
+  const diagOk = ui.diagRows === 3 && /kbps|正在建立/.test(ui.diagMine) && /直连|中继/.test(ui.peerPath);
+  if (ui.rows === 3 && ui.acts >= 1 && cycles && hostMode && diagOk) {
     console.log(`成员面板: ${ui.rows} 行, 主持人有 ${ui.acts} 个操作按钮; 布局 宫格/我/主持人 正常`);
+    console.log(`网络诊断: 我 "${ui.diagMine}"; 对端 "${ui.diagPeer}" (判定: ${ui.peerPath})`);
   } else {
     failed = true;
-    console.error(`成员面板 / 布局断言失败: ${JSON.stringify({ ui, ui2, cycles, hostMode })}`);
+    console.error(`成员面板 / 布局 / 网络诊断断言失败: ${JSON.stringify({ ui, ui2, cycles, hostMode, diagOk })}`);
   }
 
   if (roomBox.stage > roomBox.w * 0.7 && roomBox.ctlTop > roomBox.vh * 0.7) {

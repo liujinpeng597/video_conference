@@ -247,6 +247,14 @@
           return s && s.q === 'poor';
         });
       },
+      // 网络诊断: 我自己这一路是收/发多少、跟几个人连着; 中继了就说明白(对端之间直连没建起来)
+      diagMine() {
+        const list = this.remotes.map((p) => this.peerStats[p.id]).filter(Boolean);
+        if (!list.length) return this.remotes.length ? '正在建立连接…' : '房间里只有你';
+        const inn = list.reduce((s, x) => s + (x.inKbps || 0), 0);
+        const out = list.reduce((s, x) => s + (x.outKbps || 0), 0);
+        return `收 ${inn} kbps · 发 ${out} kbps · ${list.length} 条连接`;
+      },
       inviteLink() { return location.origin + '/#' + this.room; },
       elapsed() {
         if (!this.joinedAt) return '';
@@ -923,6 +931,14 @@
         const p = this.participants.find((x) => x.id === pid);
         return p ? p.name : '某人';
       },
+      // 网络诊断里每个人的一行: 状态 · 收/发 · 丢包 · 往返 · 直连还是中继
+      diagLine(p) {
+        const s = this.peerStats[p.id];
+        const st = this.peerState[p.id] === 'connected' ? '已连接' : (this.peerHint(p.id) || '连接中');
+        if (!s) return st + ' · 还没采到码率';
+        return `${st} · 收 ${s.inKbps} / 发 ${s.outKbps} kbps · 丢包 ${s.lossPct}% · 往返 ${s.rttMs}ms`
+             + (s.path ? ` · ${s.path}` : '');
+      },
       // 主持人设"重点" (pid 传空 = 取消): 服务端存房间字段, 所有人下一拍一起切
       async setSpot(pid) {
         try {
@@ -1358,8 +1374,12 @@
             continue;
           }
           let inBytes = 0, outBytes = 0, lost = 0, recv = 0, jitter = 0, rtt = 0;
+          const cands = new Map();     // candidate id -> 类型 (host/srflx/relay), 用来判断走没走 TURN
+          let bestPair = null;         // 选中的那条候选对 (nominated 优先)
           rep.forEach((r) => {
-            if (r.type === 'inbound-rtp' && !r.isRemote) {
+            if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+              cands.set(r.id, r.candidateType || '');
+            } else if (r.type === 'inbound-rtp' && !r.isRemote) {
               inBytes += r.bytesReceived || 0;
               lost += r.packetsLost || 0;
               recv += r.packetsReceived || 0;
@@ -1368,8 +1388,16 @@
               outBytes += r.bytesSent || 0;
             } else if (r.type === 'candidate-pair' && r.state === 'succeeded') {
               if (typeof r.currentRoundTripTime === 'number') rtt = Math.max(rtt, r.currentRoundTripTime);
+              if (!bestPair || r.nominated) bestPair = r;
             }
           });
+          // 走没走 TURN: 选中的候选对两端只要有一头是 relay, 就是中继
+          let path = '';
+          if (bestPair) {
+            const lt = cands.get(bestPair.localCandidateId) || '';
+            const rt = cands.get(bestPair.remoteCandidateId) || '';
+            path = (lt === 'relay' || rt === 'relay') ? '中继' : '直连';
+          }
           const t = performance.now();
           const prev = statsPrev.get(pid);
           statsPrev.set(pid, { t, inBytes, outBytes, lost, recv });
@@ -1387,6 +1415,7 @@
             inKbps: Math.round(inKbps), outKbps: Math.round(outKbps),
             lossPct: Math.round(lossPct * 10) / 10,
             jitterMs: Math.round(jitter * 1000), rttMs: Math.round(rtt * 1000), q,
+            path,
           };
         }
       },

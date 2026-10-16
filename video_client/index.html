@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=35">
+<link rel="stylesheet" href="app.css?v=36">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -533,6 +533,14 @@
         <p class="pfoot">
           <label class="check"><input type="checkbox" v-model="soundOn">进 / 出、举手的提示音</label>
         </p>
+
+        <!-- 网络诊断: 连不上/卡的时候先看这儿 —— 收没收到、丢没丢、走的是直连还是中继 -->
+        <div class="diag">
+          <h3 class="diag__title">网络</h3>
+          <p class="diag__row">我：{{ diagMine }}</p>
+          <p class="diag__row" v-for="p in remotes" :key="p.id">{{ p.name }}：{{ diagLine(p) }}</p>
+          <p class="field__hint">「中继」= 两台机器之间直连没建起来，媒体走了 TURN 服务器转一下：能通，但慢一些。</p>
+        </div>
       </aside>
 
       <div class="floaties" aria-hidden="true">
@@ -866,7 +874,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=35"></script>
-<script src="app.js?v=35"></script>
+<script src="vendor/vue.global.prod.js?v=36"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>

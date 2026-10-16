@@ -1192,6 +1192,11 @@ button, input { font-family: inherit; }
 .badge--share { background: var(--brand-weak); color: var(--brand); }
 .pfoot { flex: none; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-2); }
 
+/* 成员面板底部的网络诊断: 只读的一小块, 不需要交互 */
+.diag { flex: none; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.diag__title { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--text-3); }
+.diag__row { margin: 0 0 4px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
 /* "离开会议"点第一下只是待确认 */
 .ctl--armed { border-color: var(--danger); background: var(--danger-hover); color: #fff; }
 .ctl--armed .icon { color: #fff; }
