@@ -42,6 +42,7 @@
   let modalOpener = null;
   let recog = null;   // 实时字幕用的语音识别实例 (Web Speech API), 不进响应式
   let recorder = null;   // 本地录制 (MediaRecorder), 不进响应式
+  let recStartedAt = 0;  // 这一段录制的开始时间 (算时长用)
 
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
@@ -140,6 +141,9 @@
         captionText: '',        // 当前这一句 (识别是流式的, 会一直覆盖)
         captionNote: '',        // 字幕的说明 / 出错原因
         recOn: false,           // 本地录制开着没 (只录自己这一路)
+        recordings: [],         // 个人中心 · 我的录制 (元数据, 字节在服务端)
+        recListErr: '',
+        recBusy: 0,             // 正在下载 / 删除的 id (0 = 空闲)
         todayDay: '',
         todayWeek: '',
 
@@ -241,7 +245,8 @@
       // 个人中心的二级页标题 / 列表里显示的当前主题名
       profSectionName() {
         return { me: '个人资料', security: '账号安全', display: '界面与显示',
-                 media: '媒体设备', notice: '通知与提示音' }[this.profSection] || '';
+                 media: '媒体设备', notice: '通知与提示音',
+                 recordings: '会议录制' }[this.profSection] || '';
       },
       themeName() {
         return { auto: '跟随系统', light: '浅色', dark: '深色' }[this.theme] || '跟随系统';
@@ -512,12 +517,80 @@
       openProfSection(id) {
         this.profErr = '';
         if (id === 'me') this.nickInput = this.displayName || '';
+        if (id === 'recordings') this.loadRecordings();   // 进这一页就拉一次列表
         this.profSection = id;
         // 键盘用户: 打开二级页把焦点送到"返回"上, 不然焦点还留在已经消失的那一行上
         this.$nextTick(() => { const el = this.$refs.profBack; if (el) el.focus(); });
       },
       closeProfSection() {
         this.profSection = '';
+      },
+      // ------------------------------------------------- 个人中心 · 我的录制
+      // 列表只有元数据; 下载走 fetch (带鉴权头) 再拼成 Blob 落盘 —— 直接给 <a href>
+      // 带不上 Authorization, 服务端又要按账号校验, 所以不能偷这个懒。
+      async loadRecordings() {
+        this.recListErr = '';
+        try {
+          const r = await this.authed('GET', '/api/recordings');
+          this.recordings = Array.isArray(r.recordings) ? r.recordings : [];
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.recListErr = err.message || '加载失败';
+        }
+      },
+      async downloadRecording(rec) {
+        if (this.recBusy) return;
+        this.recBusy = rec.id;
+        try {
+          const res = await fetch('/api/recordings/get?id=' + rec.id,
+                                   { headers: { Authorization: 'Bearer ' + this.token } });
+          if (!res.ok) throw new Error('服务端返回 ' + res.status);
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = '同频-' + (rec.room || 'meeting') + '-' + (rec.id || '') + '.webm';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          this.flash('已开始下载（' + this.fmtBytes(blob.size) + '）');
+        } catch (err) {
+          this.flash(err.message || '下载失败');
+        } finally {
+          this.recBusy = 0;
+        }
+      },
+      async deleteRecording(rec) {
+        if (this.recBusy) return;
+        this.recBusy = rec.id;
+        try {
+          await this.authed('POST', '/api/recordings/delete?id=' + rec.id);
+          this.recordings = this.recordings.filter((x) => x.id !== rec.id);
+          this.flash('已删除这条录制');
+        } catch (err) {
+          if (err.dead) { this.sessionDead(); return; }
+          this.flash(err.message || '删除失败');
+        } finally {
+          this.recBusy = 0;
+        }
+      },
+      fmtBytes(n) {
+        const b = Number(n) || 0;
+        if (b < 1024) return b + ' B';
+        if (b < 1024 * 1024) return Math.round(b / 1024) + ' KB';
+        return (b / 1024 / 1024).toFixed(1) + ' MB';
+      },
+      fmtDur(sec) {
+        const s = Math.max(0, Math.round(Number(sec) || 0));
+        const m = Math.floor(s / 60);
+        return m ? (m + ' 分 ' + (s % 60) + ' 秒') : (s + ' 秒');
+      },
+      fmtWhen(sec) {
+        const t = Number(sec) || 0;
+        if (!t) return '';
+        const d = new Date(t * 1000);
+        const pad = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' '
+             + pad(d.getHours()) + ':' + pad(d.getMinutes());
       },
 
       async loadMe() {
@@ -962,20 +1035,54 @@
           return;
         }
         recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-        recorder.onstop = () => {
+        recorder.onstop = async () => {
           const blob = new Blob(chunks, { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
-          a.href = url;
-          a.download = '同频-' + (this.room || 'meeting') + '-' + stamp + '.webm';
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-          this.flash('录制已保存到下载文件夹（' + Math.max(1, Math.round(blob.size / 1024)) + ' KB）');
+          const seconds = recStartedAt ? Math.round((Date.now() - recStartedAt) / 1000) : 0;
+          recStartedAt = 0;
+          if (!blob.size) { this.flash('这段录制是空的，没存'); return; }
+          const kb = Math.max(1, Math.round(blob.size / 1024));
+          try {
+            // 上传为主: 存到服务端的对象存储/录制目录, 个人中心里随时能下回来
+            await this.uploadRecording(blob, seconds);
+            this.flash('录制已上传（' + kb + ' KB）→ 个人中心 · 我的录制');
+          } catch (err) {
+            // 上传失败退回本地下载: 宁可落在浏览器下载里, 也不把录像弄丢
+            this.saveLocal(blob);
+            this.flash('上传失败（' + (err.message || err) + '），已改为存到本地下载');
+          }
         };
+        recStartedAt = Date.now();
         recorder.start(1000);   // 每秒落一块: 万一崩了也不至于整段丢
         this.recOn = true;
         this.flash('正在录制（只录你这一路）');
+      },
+      // 上传原始字节 —— 不是 JSON, 所以不能走 call(); 鉴权头自己带。
+      async uploadRecording(blob, seconds) {
+        const url = '/api/recordings?room=' + encodeURIComponent(this.room || '') + '&seconds=' + (seconds || 0);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + this.token, 'Content-Type': 'video/webm' },
+          body: blob,
+        });
+        if (!res.ok) {
+          let msg = '服务端返回 ' + res.status;
+          try {
+            const d = await res.json();
+            if (d && d.error) msg = d.error;
+          } catch (err) { /* 不是 JSON 就用状态码 */ }
+          throw new Error(msg);
+        }
+        return res.json();
+      },
+      // 兜底: 存到本地下载文件夹 (上传不可用时的退路)
+      saveLocal(blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+        a.href = url;
+        a.download = '同频-' + (this.room || 'meeting') + '-' + stamp + '.webm';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
       },
       stopRecord() {
         this.recOn = false;

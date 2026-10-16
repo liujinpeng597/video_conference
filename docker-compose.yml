@@ -122,6 +122,15 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS:-}
       KAFKA_TOPIC: ${KAFKA_TOPIC:-meeting.events}
       TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-}
+      # 会议录制: 字节存哪儿。默认 file = 挂一个卷 (单机/内网够用);
+      # 换成 s3 就写对象存储 (见 video_server/README.md「会议录制」)。
+      RECORDINGS_BACKEND: ${RECORDINGS_BACKEND:-file}
+      RECORD_DIR: /data/recordings
+      RECORD_MAX_BYTES: ${RECORD_MAX_BYTES:-209715200}
+    volumes:
+      # 三个副本共用一个卷: 谁录的都写这儿, 所以"在哪台录的"不影响下载。
+      # 换 s3 后端之后这一行可以删掉。
+      - recdata:/data/recordings
       # 交给浏览器的 ICE 服务器列表。默认只有一个公共 STUN, 本机和局域网够用;
       # 对外提供服务时把 TURN 加进来 (见 video_server/README.md「信令和媒体」):
       # ICE_SERVERS: '[{"urls":"stun:stun.example.com:3478"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]'
@@ -350,6 +359,7 @@ services:
 volumes:
   pgdata:
   miniodata:
+  recdata:
   promdata:
   grafanadata:
   kafkadata:

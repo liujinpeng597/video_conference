@@ -5,6 +5,7 @@
 #include <string>
 
 #include "auth.h"
+#include "blob.h"
 #include "db.h"
 #include "events.h"
 #include "handlers.h"
@@ -80,6 +81,10 @@ int main(int argc, char** argv) {
 
     // 算密码用的 libsodium 初始化和那个等时占位哈希, 要在起线程池之前做完
     auth::init();
+
+    // 录制存哪儿 (文件目录 / 对象存储): 配置不齐也照常启动, 只是录制接口会明确报错,
+    // 不因为一个可选功能把整个服务拦在门外。
+    blob::init();
 
     std::string dbErr;
     if (!db::init(dbUrl, migrations, &dbErr)) {

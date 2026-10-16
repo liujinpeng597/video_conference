@@ -285,9 +285,9 @@ try {
       out.backToHeader = !!document.querySelector('.sethead') === false && !!document.querySelector('.setrow');
       return out;
     })()`);
-  if (prof.groups.join('/') === '账号/通用/会话' && prof.rows === 6 && prof.nick && prof.pw &&
+  if (prof.groups.join('/') === '账号/通用/会议录制/会话' && prof.rows === 7 && prof.nick && prof.pw &&
       prof.backFocused && prof.backToHeader) {
-    console.log(`个人中心: 分成 ${prof.groups.join(' / ')} 三组共 ${prof.rows} 个入口; 点进去是二级页 (个人资料=昵称, 账号安全=改密码), 还能返回`);
+    console.log(`个人中心: 分成 ${prof.groups.join(' / ')} 四组共 ${prof.rows} 个入口; 点进去是二级页 (个人资料=昵称, 账号安全=改密码), 还能返回`);
   } else {
     failed = true;
     console.error(`个人中心分组断言失败: ${JSON.stringify(prof)}`);
@@ -1209,20 +1209,39 @@ try {
   if (reactOk) console.log('表情反应: 对端收到了 👍');
   else { failed = true; console.error('表情反应断言失败: 对端没收到反应'); }
 
-  // 本地录制: 按钮在 -> 开始 -> 变红 -> 停止后回到未录 (这儿的下载动作浏览器可能拦, 不管它)
+  // 本地录制 -> 上传到服务端 -> 个人中心的「我的录制」里能看到、能删
   const rec = await evalIn(cdp, pages[0].sessionId, `(async () => {
       const vm = ${VM};
       const btn = [...document.querySelectorAll('.ctl')].some((b) => b.textContent.includes('录制'));
       vm.toggleRecord();
       await vm.$nextTick();
       const out = { btn, on: vm.recOn, cls: !!document.querySelector('.ctl--rec') };
-      vm.stopRecord();
+      await new Promise((r) => setTimeout(r, 1500));   // 录 1.5 秒, 让 MediaRecorder 真落块
+      vm.stopRecord();                                  // 停了就上传 (异步)
       await vm.$nextTick();
       out.off = !vm.recOn && !document.querySelector('.ctl--rec');
+      // 等上传落地: 轮着问服务端列表
+      for (let i = 0; i < 20; i++) {
+        await vm.loadRecordings();
+        if (vm.recordings.length) break;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      out.listed = vm.recordings.length;
+      out.first = vm.recordings[0] ? { room: vm.recordings[0].room, bytes: vm.recordings[0].bytes } : null;
+      // 下载一次 (拿到的是真字节, 大小应该 > 0)
+      if (vm.recordings[0]) {
+        const res = await fetch('/api/recordings/get?id=' + vm.recordings[0].id,
+                                { headers: { Authorization: 'Bearer ' + vm.token } });
+        const blob = await res.blob();
+        out.downloadBytes = blob.size;
+        await vm.deleteRecording(vm.recordings[0]);     // 删掉, 别留脏数据
+        out.afterDelete = vm.recordings.length;
+      }
       return out;
     })()`);
-  if (rec.btn && rec.on && rec.cls && rec.off) {
-    console.log('本地录制: 控制条有按钮, 开了变红并标"停止录制", 停了回到未录状态');
+  if (rec.btn && rec.on && rec.cls && rec.off && rec.listed === 1 &&
+      rec.first && rec.first.bytes > 0 && rec.downloadBytes > 0 && rec.afterDelete === 0) {
+    console.log(`本地录制: 录 1.5 秒 -> 上传到服务端 (${rec.first.bytes} 字节) -> 列表里 1 条 -> 下载拿到同样大小的字节 -> 删除后归零`);
   } else {
     failed = true;
     console.error(`本地录制断言失败: ${JSON.stringify(rec)}`);

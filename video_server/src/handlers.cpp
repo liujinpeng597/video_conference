@@ -14,6 +14,8 @@
 // 还没有: WebSocket、SDP/ICE 之外的媒体转发 (见 README「信令和媒体」)。
 #include "handlers.h"
 
+#include "blob.h"
+
 #include <unistd.h>
 #include <sodium.h>
 
@@ -45,6 +47,8 @@ namespace {
 // -------------------------------------------------------------------- 常量
 constexpr size_t kMaxHead = 16 * 1024;  // 请求行 + 头
 constexpr size_t kMaxBody = 64 * 1024;  // 请求体 (现在的接口都是小 JSON)
+// 录制保留多久 (秒)。过期清理是"列列表的时候顺手删" —— 这个规模不值得引定时任务。
+constexpr long long kRecordKeepSeconds = 30LL * 24 * 3600;   // 30 天
 constexpr size_t kMaxFileBytes = 8u << 20;
 
 // 信令搬运的一些上限。SDP 一般 2-4KB, 给宽一点。
@@ -220,7 +224,12 @@ Parse parseRequest(std::string& buf, Request* req, int* err) {
             if (lower(v).find("close") != std::string::npos) req->keepAlive = false;
         }
     }
-    if (contentLength > kMaxBody) {
+    // 录制上传是原始字节流 (几十 MB), 只有这一个路径放宽 —— 其余接口都是小 JSON,
+    // 不跟着放大 (上限值走 blob 层, RECORD_MAX_BYTES 可调)。
+    const size_t qmark = target.find('?');
+    const std::string pathOnly = (qmark == std::string::npos) ? target : target.substr(0, qmark);
+    const size_t cap = (pathOnly == "/api/recordings") ? (size_t)blob::maxBytes() : kMaxBody;
+    if (contentLength > cap) {
         *err = 413;
         return Parse::Bad;
     }
@@ -228,9 +237,8 @@ Parse parseRequest(std::string& buf, Request* req, int* err) {
     const size_t total = headEnd + 4 + contentLength;
     if (buf.size() < total) return Parse::NeedMore;
 
-    const size_t q = target.find('?');
-    req->path = (q == std::string::npos) ? target : target.substr(0, q);
-    req->query = (q == std::string::npos) ? std::string() : target.substr(q + 1);
+    req->path = pathOnly;
+    req->query = (qmark == std::string::npos) ? std::string() : target.substr(qmark + 1);
     req->body.assign(buf, headEnd + 4, contentLength);
     buf.erase(0, total);
     return Parse::Ok;
@@ -937,6 +945,113 @@ Resp apiRoomsLock(const Request& req) {
 
 // 主持人结束整场会议: 所有人 (含自己) 一起被请出, 房间拆掉。
 // 主持人设"重点": 全场一起把某一格放大 (pid 传空 = 取消)。
+// ------------------------------------------------------------------ 会议录制
+// 元数据进 PG, 字节进 blob 层 (file 或对象存储)。三条铁律:
+//   1) 只能看/删自己的 (按 username 过滤, 改 id 也拿不到别人的);
+//   2) 存字节失败就把刚插的行撤掉, 不留一行指向空气;
+//   3) 上限走 blob 层, 超了在上传入口就 413。
+Resp apiRecordingsPost(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+    if (!blob::ready()) return errJson(503, "服务端还没配好录制存储：" + blob::problem());
+    if (req.body.empty()) return errJson(400, "没有收到录制内容");
+    if ((long long)req.body.size() > blob::maxBytes()) {
+        return errJson(413, "这段录制太大了（上限 " + std::to_string(blob::maxBytes() / 1024 / 1024) + "MB）");
+    }
+
+    std::string room = queryStr(req.query, "room");
+    if (room.size() > 40) room = room.substr(0, 40);
+    const long long seconds = queryInt(req.query, "seconds", 0);
+
+    // 对象键: 用户名 + 随机串 + .webm (用户名只允许 [a-z0-9_], blob 层还会再校验一次)
+    const std::string key = user + "_" + rnd::hex(8) + ".webm";
+    std::string err;
+    long long id = 0;
+    if (!db::addRecording(user, room, key, seconds, &id, &err)) {
+        return errJson(500, "记录制失败：" + err);
+    }
+    if (!blob::put(key, req.body, &err)) {
+        std::string ignore;
+        db::deleteRecording(user, id, &ignore);   // 字节没存上, 行也别留着
+        return errJson(500, "存录制失败：" + err);
+    }
+    std::string berr;
+    db::addRecordingBytes(id, (long long)req.body.size(), &berr);   // 失败只是少了显示用的大小
+    return okJson("{\"ok\":true,\"id\":" + std::to_string(id) +
+                  ",\"bytes\":" + std::to_string(req.body.size()) + "}");
+}
+
+// 列我自己的录制 (顺手做 30 天过期清理: 懒清, 不引定时任务)
+Resp apiRecordingsList(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+
+    std::string err;
+    std::string ignore;
+    std::vector<std::string> dead;
+    if (db::expiredRecordings(kRecordKeepSeconds, &dead, &err)) {
+        for (const std::string& k : dead) blob::remove(k, &ignore);   // 行已经删了, 字节尽力删
+    }
+
+    std::vector<db::Recording> list;
+    if (!db::listRecordings(user, &list, &err)) return errJson(500, "查录制列表失败：" + err);
+    std::string arr = "[";
+    bool first = true;
+    for (const db::Recording& r : list) {
+        if (!first) arr += ',';
+        first = false;
+        arr += "{\"id\":" + std::to_string(r.id) +
+               ",\"room\":" + json::quote(r.room) +
+               ",\"bytes\":" + std::to_string(r.bytes) +
+               ",\"seconds\":" + std::to_string(r.seconds) +
+               ",\"created\":" + std::to_string(r.createdSec) + "}";
+    }
+    arr += ']';
+    return okJson("{\"ok\":true,\"backend\":" + json::quote(blob::backendName()) +
+                  ",\"recordings\":" + arr + "}");
+}
+
+// 下载某一条 (原样把字节发回去; 前端 fetch 成 Blob 再落盘, 所以不需要 Content-Disposition)
+Resp apiRecordingsGet(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+    const long long id = queryInt(req.query, "id", 0);
+    if (id <= 0) return errJson(400, "要带 id");
+
+    db::Recording rec;
+    std::string err;
+    if (!db::getRecording(user, id, &rec, &err)) return errJson(500, "查录制失败：" + err);
+    if (rec.id == 0) return errJson(404, "没有这条录制");
+
+    std::string bytes;
+    if (!blob::get(rec.objectKey, &bytes, &err)) return errJson(500, "取录制失败：" + err);
+    Resp r;
+    r.code = 200;
+    r.type = "video/webm";
+    r.body = std::move(bytes);
+    return r;
+}
+
+Resp apiRecordingsDelete(const Request& req) {
+    std::string user;
+    Resp fail;
+    if (!requireAuth(req, &user, &fail)) return fail;
+    const long long id = queryInt(req.query, "id", 0);
+    if (id <= 0) return errJson(400, "要带 id");
+
+    db::Recording rec;
+    std::string err;
+    if (!db::getRecording(user, id, &rec, &err)) return errJson(500, "查录制失败：" + err);
+    if (rec.id == 0) return errJson(404, "没有这条录制");
+    if (!db::deleteRecording(user, id, &err)) return errJson(500, "删录制失败：" + err);
+    std::string ignore;
+    blob::remove(rec.objectKey, &ignore);   // 行删了就算成功; 字节删不掉只是留个孤儿
+    return okJson("{\"ok\":true}");
+}
+
 Resp apiRoomsSpot(const Request& req) {
     std::string user;
     Resp fail;
@@ -1285,6 +1400,20 @@ Resp routeApi(const Request& req) {
     if (req.path == "/api/rooms/spot") {
         if (!isPost) return errJson(405, "这个接口只支持 POST");
         return apiRoomsSpot(req);
+    }
+    // 会议录制: 集合上 GET=列表 / POST=上传; 单条用 /get 和 /delete (调度器不解析路径参数)
+    if (req.path == "/api/recordings") {
+        if (isGet) return apiRecordingsList(req);
+        if (isPost) return apiRecordingsPost(req);
+        return errJson(405, "这个接口只支持 GET / POST");
+    }
+    if (req.path == "/api/recordings/get") {
+        if (!isGet) return errJson(405, "这个接口只支持 GET");
+        return apiRecordingsGet(req);
+    }
+    if (req.path == "/api/recordings/delete") {
+        if (!isPost) return errJson(405, "这个接口只支持 POST");
+        return apiRecordingsDelete(req);
     }
     if (req.path == "/api/ice") {
         if (!isGet) return errJson(405, "这个接口只支持 GET");

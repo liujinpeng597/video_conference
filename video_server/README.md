@@ -188,6 +188,10 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
 | POST | `/api/rooms/kick` | `{"pid"}` | `{"ok":true}`；只有主持人能调 |
 | POST | `/api/rooms/lock` | `{"locked":bool}` | `{"ok":true,"locked":bool}`；只有主持人能调 |
 | POST | `/api/rooms/end` | - | `{"ok":true}`；只有主持人能调；所有人一起被请出、房间拆掉 |
+| POST | `/api/recordings?room=&seconds=` | 原始 webm 字节（不是 JSON） | `{"ok":true,"id":N,"bytes":M}`；上限 `RECORD_MAX_BYTES`（默认 200MB） |
+| GET | `/api/recordings` | - | 我自己的录制元数据列表（顺手做 30 天过期清理） |
+| GET | `/api/recordings/get?id=N` | - | 录制原字节（`video/webm`）；只能取自己的 |
+| POST | `/api/recordings/delete?id=N` | - | `{"ok":true}`；只能删自己的 |
 | POST | `/api/rooms/leave` | - | `{"ok":true}` |
 | GET | `/api/ice` | - | `{"iceServers":[…]}`；需登录，配了 TURN 时现场签发临时凭证 |
 
@@ -230,6 +234,22 @@ $argon2id$v=19$m=65536,t=2,p=1$QOpEid3CbqX...     97 字符
   房间 hash / 聊天 / 序号一起删。每个人的会话被删之前先留一个 `ended:<令牌>` 标记（60 秒、用一次
   就删），前端据此说"主持人结束了这场会议"，而不是误报"服务端重启"。和踢人的 `kicked:` 同一路子。
   **删 Redis 会话只清"我在哪个房间"**，登录令牌在库里 —— 所以被请出的人不会被登出。
+- 会议录制：**元数据在 PG（`recordings` 表），字节在 blob 层**（`blob.h/blob.cpp`）。字节不进库，
+  是因为那会让"唯一丢不起的那份数据"（备份/恢复的对象）跟着一起变重变慢；也不落在后端容器本地，
+  因为三个副本都是无状态的 —— 存本地等于"哪台录的就丢在哪台"。
+
+  `RECORDINGS_BACKEND` 选实现：`file`（默认，写 `RECORD_DIR`，compose 里挂了 `recdata` 卷，三个
+  副本共用）或 `s3`（对象存储，见下）。**`s3` 目前是明确未实现**：仓库里没有对外 HTTP 客户端，
+  要用 S3 接口得自己实现 AWS SigV4 签名（libsodium 有 `crypto_auth_hmacsha256`，做得成，但还没写），
+  所以现在选 `s3` 会在启动日志里说明、上传接口回 503 并给出原因 —— 不会静默什么都不存。
+
+  三条硬规矩：只按 `username` 过滤（改 id 也拿不到别人的）、存字节失败就把刚插的行撤掉（不留一行
+  指向空气）、上限在**上传入口**就拦（`RECORD_MAX_BYTES`，默认 200MB）。保留 **30 天**，清理是
+  "列列表时顺手删"（这个规模不值得引定时任务）。
+
+  一个必须知道的取舍：上传是**整段收进内存**再写下去（HTTP 层本来就是整段读的，只有
+  `/api/recordings` 这一个路径把上限放大到 200MB）。单机自用没问题，真要很多人同时传大文件，
+  得把这条路径改成"边收边落盘"或者让浏览器拿预签名 URL 直传对象存储。
 - 昵称 / 头像：房间里显示的 `participants[].name` 是**昵称**（没设就用登录名），登录名只留在
   服务端；头像存的是 data URL（前端 128×128 压好后传上来），`participants[].av` 是版本号，
   别人的头像走 `GET /api/avatar?room=&pid=` 取 —— **按 pid 取、并且校验调用者在同一个房间**，

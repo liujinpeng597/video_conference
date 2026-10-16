@@ -297,6 +297,94 @@ bool recordVisit(const std::string& username, const std::string& room, std::stri
     return true;
 }
 
+// ------------------------------------------------------------------ 会议录制
+// 字节在 blob 层 (blob.h), 这里只管元数据。object_key 由调用方生成。
+bool addRecording(const std::string& username, const std::string& room, const std::string& objectKey,
+                  long long seconds, long long* id, std::string* err) {
+    err->clear();
+    PGresult* r = query(err,
+                        "INSERT INTO recordings (username, room, object_key, seconds) "
+                        "VALUES ($1, $2, $3, $4) RETURNING id",
+                        {username, room, objectKey, std::to_string(seconds)});
+    if (r == nullptr) return false;
+    *id = std::strtoll(PQgetvalue(r, 0, 0), nullptr, 10);
+    PQclear(r);
+    return true;
+}
+
+bool addRecordingBytes(long long id, long long bytes, std::string* err) {
+    err->clear();
+    PGresult* r = query(err, "UPDATE recordings SET bytes = $1 WHERE id = $2",
+                        {std::to_string(bytes), std::to_string(id)});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool listRecordings(const std::string& username, std::vector<Recording>* out, std::string* err) {
+    err->clear();
+    PGresult* r = query(err,
+                        "SELECT id, room, object_key, bytes, seconds,"
+                        "       EXTRACT(EPOCH FROM created_at)::bigint "
+                        "  FROM recordings WHERE username = $1 ORDER BY created_at DESC LIMIT 200",
+                        {username});
+    if (r == nullptr) return false;
+    for (int i = 0; i < PQntuples(r); ++i) {
+        Recording rec;
+        rec.id = std::strtoll(PQgetvalue(r, i, 0), nullptr, 10);
+        rec.room = PQgetvalue(r, i, 1);
+        rec.objectKey = PQgetvalue(r, i, 2);
+        rec.bytes = std::strtoll(PQgetvalue(r, i, 3), nullptr, 10);
+        rec.seconds = std::strtoll(PQgetvalue(r, i, 4), nullptr, 10);
+        rec.createdSec = std::strtoll(PQgetvalue(r, i, 5), nullptr, 10);
+        out->push_back(std::move(rec));
+    }
+    PQclear(r);
+    return true;
+}
+
+bool getRecording(const std::string& username, long long id, Recording* out, std::string* err) {
+    err->clear();
+    *out = Recording();
+    PGresult* r = query(err,
+                        "SELECT id, room, object_key, bytes, seconds,"
+                        "       EXTRACT(EPOCH FROM created_at)::bigint "
+                        "  FROM recordings WHERE id = $1 AND username = $2",
+                        {std::to_string(id), username});
+    if (r == nullptr) return false;
+    if (PQntuples(r) == 1) {
+        out->id = std::strtoll(PQgetvalue(r, 0, 0), nullptr, 10);
+        out->room = PQgetvalue(r, 0, 1);
+        out->objectKey = PQgetvalue(r, 0, 2);
+        out->bytes = std::strtoll(PQgetvalue(r, 0, 3), nullptr, 10);
+        out->seconds = std::strtoll(PQgetvalue(r, 0, 4), nullptr, 10);
+        out->createdSec = std::strtoll(PQgetvalue(r, 0, 5), nullptr, 10);
+    }
+    PQclear(r);
+    return true;   // 查不到不算错: 调用方看 out->id == 0 (和 getProfile 一个规矩)
+}
+
+bool deleteRecording(const std::string& username, long long id, std::string* err) {
+    err->clear();
+    PGresult* r = query(err, "DELETE FROM recordings WHERE id = $1 AND username = $2",
+                        {std::to_string(id), username});
+    if (r == nullptr) return false;
+    PQclear(r);
+    return true;
+}
+
+bool expiredRecordings(long long olderThanSec, std::vector<std::string>* keys, std::string* err) {
+    err->clear();
+    PGresult* r = query(err,
+                        "DELETE FROM recordings WHERE created_at < now() - ($1 || ' seconds')::interval "
+                        "RETURNING object_key",
+                        {std::to_string(olderThanSec)});
+    if (r == nullptr) return false;
+    for (int i = 0; i < PQntuples(r); ++i) keys->push_back(PQgetvalue(r, i, 0));
+    PQclear(r);
+    return true;
+}
+
 bool recentVisits(const std::string& username, long long limit, std::vector<Visit>* out,
                   std::string* err) {
     err->clear();

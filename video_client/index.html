@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=38">
+<link rel="stylesheet" href="app.css?v=39">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -234,6 +234,17 @@
           </div>
 
           <div class="setgroup">
+            <h2 class="setgroup__title">会议录制</h2>
+            <div class="setcard">
+              <button class="setrow" type="button" @click="openProfSection('recordings')">
+                <span class="setrow__main"><span class="setrow__name">我的录制</span>
+                  <span class="setrow__val">会中录的视频存在服务端，随时下载</span></span>
+                <svg class="icon icon--sm setrow__go" aria-hidden="true"><use href="#ic-chevron-right"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="setgroup">
             <h2 class="setgroup__title">会话</h2>
             <div class="setcard">
               <button class="setrow setrow--danger" type="button" @click="logout">
@@ -363,6 +374,30 @@
               <h2 class="card__title">通知与提示音</h2>
               <label class="check"><input type="checkbox" v-model="soundOn"> 进 / 出、举手的提示音</label>
               <p class="field__hint">关掉之后，有人进房、离开、举手都不会响（只影响这台浏览器）。</p>
+            </div>
+          </template>
+
+          <template v-if="profSection === 'recordings'">
+            <div class="card">
+              <h2 class="card__title">我的录制</h2>
+              <p class="field__hint" v-if="!recordings.length && !recListErr">
+                还没有录制。会中按控制条上的「录制」开始，停下来就自动传到这里。
+              </p>
+              <p class="formerr" role="alert" v-if="recListErr">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ recListErr }}
+              </p>
+              <ul class="hist" v-if="recordings.length">
+                <li class="hist__row" v-for="r in recordings" :key="r.id">
+                  <code class="roomcode">{{ r.room || '未知房间' }}</code>
+                  <span class="hist__meta">{{ fmtDur(r.seconds) }} · {{ fmtBytes(r.bytes) }} · {{ fmtWhen(r.created) }}</span>
+                  <button class="btn btn--text" type="button" :disabled="!!recBusy" @click="downloadRecording(r)">下载</button>
+                  <button class="btn btn--text" type="button" :disabled="!!recBusy" @click="deleteRecording(r)">删除</button>
+                </li>
+              </ul>
+              <div class="form" v-if="recordings.length">
+                <p class="field__hint">只保留最近 30 天，过期会自动清理。</p>
+              </div>
+              <button class="btn btn--line" type="button" @click="loadRecordings()">刷新列表</button>
             </div>
           </template>
         </template>
@@ -891,7 +926,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=38"></script>
-<script src="app.js?v=38"></script>
+<script src="vendor/vue.global.prod.js?v=39"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>

@@ -68,6 +68,27 @@ struct Visit {
 bool recentVisits(const std::string& username, long long limit, std::vector<Visit>* out,
                   std::string* err);
 
+// 会议录制: 库里只留元数据, 字节在 blob 层 (见 blob.h)。objectKey 由应用层生成。
+struct Recording {
+    long long id = 0;
+    std::string room;
+    std::string objectKey;
+    long long bytes = 0;
+    long long seconds = 0;
+    long long createdSec = 0;   // epoch 秒, 前端自己格式化
+};
+// 插一行 (bytes 先记 0, 字节存好之后再 addRecordingBytes 补上真大小)。
+bool addRecording(const std::string& username, const std::string& room, const std::string& objectKey,
+                  long long seconds, long long* id, std::string* err);
+bool addRecordingBytes(long long id, long long bytes, std::string* err);
+// 列自己的 (最新的在前)
+bool listRecordings(const std::string& username, std::vector<Recording>* out, std::string* err);
+// 取一条, 但必须属于这个用户名 —— 别人的录制不能通过改 id 拿到
+bool getRecording(const std::string& username, long long id, Recording* out, std::string* err);
+bool deleteRecording(const std::string& username, long long id, std::string* err);
+// 过期清理: 删掉 olderThanSec 之前的那些行, 把它们的 objectKey 交出来给 blob 层删字节。
+bool expiredRecordings(long long olderThanSec, std::vector<std::string>* keys, std::string* err);
+
 // 个人资料: 昵称 (房间列表里显示的) + 头像。
 // 头像存的是完整 data URL (data:image/jpeg;base64,...), 前端一份, 后端不解析格式之外的语义。
 struct Profile {

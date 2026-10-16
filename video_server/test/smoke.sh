@@ -148,6 +148,10 @@ make -s test || { echo "单测失败"; exit 1; }
 rm -f "$LOG"
 start_server() { # [端口] [日志里的进程名]
     local port=${1:-$PORT}
+    # 录制走文件后端 + 很小的上限: 这样能在冒烟里就验证"超限 413"这条路径 (默认 200MB 太大)
+    export RECORDINGS_BACKEND=file
+    export RECORD_DIR=/tmp/vs_recordings
+    export RECORD_MAX_BYTES=256
     ./video_server --port "$port" --workers 2 --web "$WEB" \
         --db "$TEST_DB" --redis "$TEST_REDIS" >>"$LOG" 2>&1 &
     PID=$!
@@ -197,6 +201,7 @@ call() { # method path [body] [token]
 status() { printf '%s\n' "$RESP" | head -1 | tr -d '\r' | cut -d' ' -f2; }
 body() { printf '%s\n' "$RESP" | tr -d '\r' | sed -n '/^$/,$p' | tail -n +2; }
 jstr() { body | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | head -1; }
+jnum() { body | sed -n "s/.*\"$1\":\([0-9]\{1,\}\).*/\1/p" | head -1; }   # 数字字段 (不是带引号的字符串)
 jcount() { body | grep -o "\"$1\":" | wc -l | tr -d ' '; }
 
 echo
@@ -1003,6 +1008,57 @@ check "未登录设重点 401" "401" "$(status)"
 
 call POST /api/rooms/leave '{}' "$TOKEN_SP2"
 call POST /api/rooms/leave '{}' "$TOKEN_SP"
+
+echo
+echo "---- 会议录制 (元数据在 PG, 字节走 blob 层) ----"
+# 上限在 start_server 里设成了 256 字节, 所以这里既能测正常上传, 也能测超限。
+USER_REC="rec$SUF"
+USER_REC2="recb$SUF"
+call POST /api/register "{\"username\":\"$USER_REC\",\"password\":\"hunter2\"}"
+TOKEN_REC=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_REC2\",\"password\":\"hunter2\"}"
+TOKEN_REC2=$(jstr token)
+
+REC_BODY="fake-webm-bytes-0123456789"
+call POST "/api/recordings?room=$ROOM&seconds=7" "$REC_BODY" "$TOKEN_REC"
+check "上传录制 200" "200" "$(status)"
+REC_ID=$(jnum id)
+check "上传返回了 id" "1" "$([ -n "$REC_ID" ] && echo 1 || echo 0)"
+
+call GET /api/recordings '' "$TOKEN_REC"
+check "列表里 1 条" "1" "$(jcount id)"
+contains "列表带上了后端名" "$(body)" '"backend":"file"'
+contains "记下了房间号" "$(body)" "\"room\":\"$ROOM\""
+contains "记下了时长" "$(body)" '"seconds":7'
+
+call GET "/api/recordings/get?id=$REC_ID" '' "$TOKEN_REC"
+check "下载自己的录制 200" "200" "$(status)"
+check "下载的字节和上传的一模一样" "$REC_BODY" "$(body)"
+
+# 隔离: 别人的既看不到也拿不到, 更不能删
+call GET /api/recordings '' "$TOKEN_REC2"
+check "别人的列表是空的" "0" "$(jcount id)"
+call GET "/api/recordings/get?id=$REC_ID" '' "$TOKEN_REC2"
+check "下别人的录制 404" "404" "$(status)"
+call POST "/api/recordings/delete?id=$REC_ID" '' "$TOKEN_REC2"
+check "删别人的录制 404" "404" "$(status)"
+
+# 超限: 256 字节的上限, 发 300 字节
+BIG_BODY=$(printf 'x%.0s' $(seq 1 300))
+call POST "/api/recordings?room=$ROOM" "$BIG_BODY" "$TOKEN_REC"
+check "超过上限 413" "413" "$(status)"
+
+call POST "/api/recordings" "x"
+check "未登录上传 401" "401" "$(status)"
+call POST '/api/recordings/delete' '{}' "$TOKEN_REC"
+check "删录制不带 id 400" "400" "$(status)"
+
+call POST "/api/recordings/delete?id=$REC_ID" '' "$TOKEN_REC"
+check "删自己的录制 200" "200" "$(status)"
+call GET "/api/recordings/get?id=$REC_ID" '' "$TOKEN_REC"
+check "删掉之后取不到 404" "404" "$(status)"
+call GET /api/recordings '' "$TOKEN_REC"
+check "列表也空了" "0" "$(jcount id)"
 
 echo
 echo "---- 路由 ----"
