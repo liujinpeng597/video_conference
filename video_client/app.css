@@ -1216,6 +1216,19 @@ button, input { font-family: inherit; }
 /* "离开会议"点第一下只是待确认 */
 .ctl--armed { border-color: var(--danger); background: var(--danger-hover); color: #fff; }
 .ctl--armed .icon { color: #fff; }
+/* 正在录制: 红点 + 红边, 一眼能看出"还在录" */
+.ctl--rec { position: relative; border-color: var(--danger); color: var(--danger-text); }
+.ctl--rec .icon { color: var(--danger); }
+.ctl--rec::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-full);
+  background: var(--danger);
+}
 
 /* 顶栏那几个文字按钮的"选中"态 (布局按钮用: 放大模式下高亮) */
 .btn--text.on { color: var(--brand); background: var(--brand-weak); font-weight: 600; }

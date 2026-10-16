@@ -41,6 +41,7 @@
   // 弹窗关掉之后把焦点还给打开它的那颗按钮 —— 键盘用户不至于掉到页面开头
   let modalOpener = null;
   let recog = null;   // 实时字幕用的语音识别实例 (Web Speech API), 不进响应式
+  let recorder = null;   // 本地录制 (MediaRecorder), 不进响应式
 
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
@@ -138,6 +139,7 @@
         captionOn: false,       // 实时字幕开着没
         captionText: '',        // 当前这一句 (识别是流式的, 会一直覆盖)
         captionNote: '',        // 字幕的说明 / 出错原因
+        recOn: false,           // 本地录制开着没 (只录自己这一路)
         todayDay: '',
         todayWeek: '',
 
@@ -321,6 +323,7 @@
       this.stopTimers();
       this.stopShare();
       this.stopCaption();
+      this.stopRecord();
       this.releaseWakeLock();
       this.closeAllCalls();
       this.stopMedia();
@@ -936,6 +939,51 @@
         const p = this.participants.find((x) => x.id === pid);
         return p ? p.name : '某人';
       },
+      // 本地录制: 只录**你自己这一路** (共享屏幕优先, 否则摄像头 + 麦克风), 录完直接下载。
+      // 不走服务器、也不混流 —— mesh 下要录"所有人的画面"得先自己混流, 那是另一档工作量。
+      toggleRecord() {
+        if (this.recOn) { this.stopRecord(); return; }
+        if (!window.MediaRecorder) { this.flash('这个浏览器不支持本地录制'); return; }
+        const src = this.localSource();
+        if (!src || !src.getVideoTracks().length) { this.flash('还没有画面可以录'); return; }
+
+        // 只把视频轨 + 麦克风轨拼成一个流给录制器 (共享屏幕时也带上自己的声音)
+        const stream = new MediaStream();
+        for (const t of src.getVideoTracks()) stream.addTrack(t);
+        const audio = this.media.stream && this.media.stream.getAudioTracks()[0];
+        if (audio) stream.addTrack(audio);
+
+        const chunks = [];
+        const prefer = 'video/webm;codecs=vp9,opus';
+        try {
+          recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported(prefer) ? { mimeType: prefer } : undefined);
+        } catch (err) {
+          this.flash('开始录制失败：' + (err.message || err));
+          return;
+        }
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+          a.href = url;
+          a.download = '同频-' + (this.room || 'meeting') + '-' + stamp + '.webm';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          this.flash('录制已保存到下载文件夹（' + Math.max(1, Math.round(blob.size / 1024)) + ' KB）');
+        };
+        recorder.start(1000);   // 每秒落一块: 万一崩了也不至于整段丢
+        this.recOn = true;
+        this.flash('正在录制（只录你这一路）');
+      },
+      stopRecord() {
+        this.recOn = false;
+        if (recorder && recorder.state !== 'inactive') {
+          try { recorder.stop(); } catch (err) { /* 已经不在了 */ }
+        }
+        recorder = null;
+      },
       // 实时字幕: 用浏览器自带的语音识别 (Web Speech API)。不引模型、不连我们自己的服务器,
       // 所以: 只有 Chrome / Edge 有; 而且它认的是**本机麦克风里的话**, 不是所有人的声音。
       toggleCaption() {
@@ -1548,6 +1596,7 @@
         this.stopTimers();
         this.stopShare();
         this.stopCaption();
+        this.stopRecord();
         this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();
@@ -1838,6 +1887,7 @@
         this.stopTimers();
         this.stopShare();
         this.stopCaption();
+        this.stopRecord();
         this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();

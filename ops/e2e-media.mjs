@@ -1209,6 +1209,25 @@ try {
   if (reactOk) console.log('表情反应: 对端收到了 👍');
   else { failed = true; console.error('表情反应断言失败: 对端没收到反应'); }
 
+  // 本地录制: 按钮在 -> 开始 -> 变红 -> 停止后回到未录 (这儿的下载动作浏览器可能拦, 不管它)
+  const rec = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const btn = [...document.querySelectorAll('.ctl')].some((b) => b.textContent.includes('录制'));
+      vm.toggleRecord();
+      await vm.$nextTick();
+      const out = { btn, on: vm.recOn, cls: !!document.querySelector('.ctl--rec') };
+      vm.stopRecord();
+      await vm.$nextTick();
+      out.off = !vm.recOn && !document.querySelector('.ctl--rec');
+      return out;
+    })()`);
+  if (rec.btn && rec.on && rec.cls && rec.off) {
+    console.log('本地录制: 控制条有按钮, 开了变红并标"停止录制", 停了回到未录状态');
+  } else {
+    failed = true;
+    console.error(`本地录制断言失败: ${JSON.stringify(rec)}`);
+  }
+
   // 实时字幕: 按钮在, 打开有横条, 关掉清干净。这个环境里识别可能不可用 (没有语音服务),
   // 但"用不了"必须说清原因, 不能让界面卡在打开状态。
   const cap = await evalIn(cdp, pages[0].sessionId, `(async () => {

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=37">
+<link rel="stylesheet" href="app.css?v=38">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -591,6 +591,11 @@
                     @click="sendReaction(e)" :aria-label="'发送表情 ' + e">{{ e }}</button>
           </div>
         </div>
+        <button class="ctl" :class="{ 'ctl--rec': recOn }" type="button" @click="toggleRecord"
+                :aria-pressed="recOn" aria-label="本地录制（只录你这一路，录完下载）">
+          <svg class="icon" aria-hidden="true"><use href="#ic-video"></use></svg>
+          <span class="ctl__label">{{ recOn ? '停止录制' : '录制' }}</span>
+        </button>
         <button class="ctl" type="button" :class="{ 'ctl--on': captionOn }" @click="toggleCaption"
                 :aria-pressed="captionOn" aria-label="实时字幕（只认你麦克风里说的话）">
           <svg class="icon" aria-hidden="true"><use href="#ic-message"></use></svg>
@@ -886,7 +891,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=37"></script>
-<script src="app.js?v=37"></script>
+<script src="vendor/vue.global.prod.js?v=38"></script>
+<script src="app.js?v=38"></script>
 </body>
 </html>
