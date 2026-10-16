@@ -257,9 +257,9 @@ try {
   // 第 1 个标签页开一个新房间, 读出房间号; 另外两个用同一个房间号进房
   // 三个界面: 会议首页 / 个人中心 / 会议中 —— 顶栏两个 tab 能来回切, 个人中心有昵称和改密码
   await activate(cdp, pages[0].sessionId);
-  // 首页的试麦电平条要跟着摄像头/麦克风一起出来 (媒体是异步拿到的, 等它挂上)
-  await waitIn(cdp, pages[0].sessionId, `!!document.querySelector('.meter__bar')`, 15000, '首页试麦电平条');
-  console.log('首页: 试麦电平条在');
+  // 设备是异步拿到的, 等媒体流挂上 (试麦电平条现在在弹窗里, 那两处断言在下面)
+  await waitIn(cdp, pages[0].sessionId, `!!(${VM}).media.stream`, 15000, '首页拿到媒体流');
+  console.log('首页: 媒体流已就绪 (设备面板在弹窗里)');
 
   await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).goProfile(); return true; })()`);
   // 视图切换是 <transition mode="out-in">, 得等新视图真的挂上 (一次 $nextTick 不够)
@@ -373,7 +373,7 @@ try {
          const g = (sel) => { const e = document.querySelector(sel); if (!e) return null;
            const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
            return { w: Math.round(r.width), h: Math.round(r.height), ar: s.aspectRatio, align: s.alignItems }; };
-         return { vw: innerWidth, home: g('.home'), side: g('.home__side'), card: g('.card') };
+         return { vw: innerWidth, home: g('.home'), main: g('.home__main'), card: g('.card') };
        })()`,
     );
     console.log('lobby geo:', JSON.stringify(geo));
@@ -395,6 +395,7 @@ try {
       const vm = ${VM};
       const inlineBefore = !!document.querySelector('.home #f-room');
       const homeNoPreview = !document.querySelector('.home .preview');   // 首页那份预览已经删了
+      const homeNoDevice = !document.querySelector('.home .devbtn');     // 设备面板也整体搬进弹窗了
       vm.focusJoin();
       await vm.$nextTick();
       const open = !!document.querySelector('.modal');
@@ -414,13 +415,13 @@ try {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       await vm.$nextTick();
       const closedByEsc = !vm.joinOpen && !document.querySelector('.modal');
-      return { inlineBefore, homeNoPreview, open, masked, focused, previews, bound, devBtns, meter,
+      return { inlineBefore, homeNoPreview, homeNoDevice, open, masked, focused, previews, bound, devBtns, meter,
                closedByMask, closedByEsc };
     })()`);
-  if (!joinUi.inlineBefore && joinUi.homeNoPreview && joinUi.open && joinUi.masked && joinUi.focused &&
+  if (!joinUi.inlineBefore && joinUi.homeNoPreview && joinUi.homeNoDevice && joinUi.open && joinUi.masked && joinUi.focused &&
       joinUi.previews === 1 && joinUi.bound && joinUi.devBtns === 2 && joinUi.meter &&
       joinUi.closedByMask && joinUi.closedByEsc) {
-    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦; 带本地预览 / 静音 / 关摄像头 / 试麦; 点遮罩 / Esc 都能关');
+    console.log('加入会议弹窗: 点按钮弹出 + 输入框自动聚焦; 带本地预览 / 静音 / 关摄像头 / 试麦 (首页已无设备面板)');
   } else {
     failed = true;
     console.error(`加入会议弹窗断言失败: ${JSON.stringify(joinUi)}`);

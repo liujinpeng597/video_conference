@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=27">
+<link rel="stylesheet" href="app.css?v=28">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -166,49 +166,8 @@
             </p>
           </section>
 
-          <aside class="home__side">
-            <!-- 本地预览搬到"加入会议"和"创建会议"两个弹窗里了: 入会/建房之前看自己要看的。
-                 首页只留下设备开关 (静音 / 关摄像头 / 选设备 / 试麦电平)。 -->
-            <div class="card">
-              <h2 class="card__title">设备</h2>
-              <div class="devrow">
-                <button class="devbtn" type="button" @click="toggleMic"
-                        :disabled="!media.stream" :aria-pressed="micOn">
-                  <svg class="icon" aria-hidden="true"><use :href="micOn ? '#ic-microphone' : '#ic-microphone-off'"></use></svg>
-                  <span>{{ micOn ? '麦克风已开' : '已静音' }}</span>
-                </button>
-                <button class="devbtn" type="button" @click="toggleCam"
-                        :disabled="!media.stream" :aria-pressed="camOn">
-                  <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
-                  <span>{{ camOn ? '摄像头已开' : '已关闭' }}</span>
-                </button>
-                <button class="devbtn" type="button" v-if="!media.stream" @click="startMedia">
-                  <svg class="icon" aria-hidden="true"><use href="#ic-refresh"></use></svg>
-                  <span>重试</span>
-                </button>
-              </div>
-              <p class="field__err" role="alert" v-if="media.error">
-                <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ media.error }}
-              </p>
-
-              <div class="devsel" v-if="devices.cam.length > 1">
-                <label class="field__label" for="f-cam">摄像头</label>
-                <select id="f-cam" class="input" :value="devSel.cam" @change="switchDevice('cam', $event.target.value)">
-                  <option v-for="d in devices.cam" :key="d.deviceId" :value="d.deviceId">{{ d.label || '摄像头' }}</option>
-                </select>
-              </div>
-              <div class="devsel" v-if="devices.mic.length > 1">
-                <label class="field__label" for="f-mic">麦克风</label>
-                <select id="f-mic" class="input" :value="devSel.mic" @change="switchDevice('mic', $event.target.value)">
-                  <option v-for="d in devices.mic" :key="d.deviceId" :value="d.deviceId">{{ d.label || '麦克风' }}</option>
-                </select>
-              </div>
-              <div class="meter" v-if="media.stream">
-                <span class="meter__label">试麦</span>
-                <span class="meter__bar"><i :style="{ width: Math.round(micLevel * 100) + '%' }"></i></span>
-              </div>
-            </div>
-          </aside>
+          <!-- 设备面板 (预览 / 静音 / 关摄像头 / 选设备 / 试麦) 整体搬进了两个弹窗:
+               调设备这件事只发生在"入会 / 建房"那一刻, 首页留个按钮就够了。 -->
         </div>
       </main>
     </div>
@@ -768,7 +727,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=27"></script>
-<script src="app.js?v=27"></script>
+<script src="vendor/vue.global.prod.js?v=28"></script>
+<script src="app.js?v=28"></script>
 </body>
 </html>
