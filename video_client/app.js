@@ -27,6 +27,16 @@
   const STORE_USER = 'tp_user';            // sessionStorage
   const STORE_REMEMBER = 'tp_remember';    // localStorage
   const STORE_LAST_USER = 'tp_last_user';  // localStorage, 就是"记住账号"
+  const STORE_THEME = 'tp_theme';          // localStorage, 外观: auto | light | dark
+
+  // 主题要在挂载之前就定下来: 晚了深色模式会先闪一下白 (脚本在 body 末尾, 这里等于立刻执行)。
+  let systemDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  function applyTheme(want) {
+    // 只认 light / dark, 其余 (含 auto) 一律跟系统
+    const resolved = (want === 'light' || want === 'dark') ? want : (systemDark ? 'dark' : 'light');
+    document.documentElement.dataset.theme = resolved;
+  }
+  applyTheme(localStorage.getItem(STORE_THEME) || 'auto');
 
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
@@ -150,6 +160,7 @@
         devices: { mic: [], cam: [] },
         devSel: { mic: '', cam: '' },
         soundOn: true,      // 进/出、举手的提示音
+        theme: localStorage.getItem(STORE_THEME) || 'auto',   // 外观: auto | light | dark
         leaveArmed: false,  // "离开会议"点第一下只是待确认
         endArmed: false,    // "结束会议" (主持人) 同理
         renaming: false,
@@ -260,6 +271,14 @@
       if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
         navigator.mediaDevices.addEventListener('devicechange', () => { this.recoverMedia(); });
       }
+
+      // 选"跟随系统"时, 系统切深浅色要跟着切 (applyTheme 在脚本开头已经跑过一次了)
+      if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+          systemDark = e.matches;
+          if (this.theme === 'auto') applyTheme('auto');
+        });
+      }
     },
 
     beforeUnmount() {
@@ -275,6 +294,13 @@
       initial(name) {
         const s = (name || '').trim();
         return s ? s.slice(0, 1) : '?';
+      },
+
+      // 外观: 存下来 + 立刻应用到 <html> 上 (真正的配色在 app.css 的 data-theme 块里)
+      setTheme(v) {
+        this.theme = (v === 'light' || v === 'dark') ? v : 'auto';
+        try { localStorage.setItem(STORE_THEME, this.theme); } catch (err) { /* 隐私模式下写不进去, 不影响这次生效 */ }
+        applyTheme(this.theme);
       },
 
       // 自己的预览。视频元素会因为切视图 / 弹窗开合被换掉, 所以用函数 ref, 并且记一个集合

@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=29">
+<link rel="stylesheet" href="app.css?v=30">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -221,6 +221,19 @@
         <div class="card">
           <h2 class="card__title">登录名</h2>
           <p class="field__hint">登录名 <b>{{ user }}</b> 用来登录，不能改。</p>
+        </div>
+
+        <div class="card">
+          <h2 class="card__title">外观</h2>
+          <div class="field">
+            <label class="field__label" for="f-theme">主题</label>
+            <select id="f-theme" class="input" :value="theme" @change="setTheme($event.target.value)">
+              <option value="auto">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+            <p class="field__hint">选「跟随系统」时，系统切到深色这里也跟着切。</p>
+          </div>
         </div>
 
         <div class="card">
@@ -732,7 +745,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=29"></script>
-<script src="app.js?v=29"></script>
+<script src="vendor/vue.global.prod.js?v=30"></script>
+<script src="app.js?v=30"></script>
 </body>
 </html>

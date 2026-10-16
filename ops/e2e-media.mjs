@@ -278,6 +278,36 @@ try {
   if (tabs === 2) console.log('三个界面: 个人中心有昵称 + 修改密码, 左侧栏两个入口, 能切回会议页');
   else { failed = true; console.error(`左侧栏入口数不对: ${tabs}`); }
 
+  // 深色模式: 切过去 <html> 上要带 data-theme=dark, 底色真的跟着变, 而且偏好存得下来
+  await activate(cdp, pages[0].sessionId);
+  const th = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const bg = () => getComputedStyle(document.body).backgroundColor;
+      const before = bg();
+      const root = () => getComputedStyle(document.documentElement);
+      const beforeVars = [root().getPropertyValue('--surface'), root().getPropertyValue('--brand-weak')].join('|');
+      vm.setTheme('dark');
+      await vm.$nextTick();
+      const darkAttr = document.documentElement.dataset.theme;
+      const darkBg = bg();
+      const darkVars = [root().getPropertyValue('--surface'), root().getPropertyValue('--brand-weak')].join('|');
+      const stored = localStorage.getItem('tp_theme');
+      return { before, darkAttr, darkBg, stored, beforeVars, darkVars };
+    })()`);
+  if (process.env.E2E_SHOT_DARK) {
+    await sleep(300);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_DARK, Buffer.from(s.data, 'base64'));
+    console.log(`截图(深色): ${process.env.E2E_SHOT_DARK}`);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(async () => { (${VM}).setTheme('auto'); return true; })()`);
+  if (th.darkAttr === 'dark' && th.stored === 'dark' && th.darkBg !== th.before && th.darkVars !== th.beforeVars) {
+    console.log(`深色模式: <html data-theme=dark>, 底色 ${th.before} -> ${th.darkBg}, 变量表也跟着换 (${th.beforeVars} -> ${th.darkVars})`);
+  } else {
+    failed = true;
+    console.error(`深色模式断言失败: ${JSON.stringify(th)}`);
+  }
+
   // 回归: 宽屏 + 摄像头关着时, 预览不能塌成一小条。曾经用 margin-inline:auto 变成
   // "按内容收缩", 关摄像头后预览里没有 in-flow 内容 (遮罩是 absolute), 预览缩成 48px。
   // 本地预览现在搬进了弹窗 (首页那份删了), 所以量弹窗里那一份。
@@ -1064,6 +1094,7 @@ try {
   const camAfterKey = await evalIn(cdp, pages[0].sessionId, `(${VM})?.camOn`);
   await key('keyDown');   // 再按一次还原
   if (process.env.E2E_SHOT_FOCUS) {
+    if (process.env.E2E_DARK) { await evalIn(cdp, pages[0].sessionId, `((${VM}).setTheme('dark'), true)`); await sleep(300); }
     const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
     writeFileSync(process.env.E2E_SHOT_FOCUS, Buffer.from(s.data, 'base64'));
     console.log(`截图(放大视图): ${process.env.E2E_SHOT_FOCUS}`);
@@ -1230,6 +1261,10 @@ try {
   if (process.env.E2E_SHOT) {
     const tab = Math.min(pages.length - 1, Math.max(0, Number(process.env.E2E_SHOT_TAB ?? 1)));
     await activate(cdp, pages[tab].sessionId);
+    if (process.env.E2E_DARK) {   // 人工看深色下的会议界面
+      await evalIn(cdp, pages[tab].sessionId, `((${VM}).setTheme('dark'), true)`);
+      await sleep(300);
+    }
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[tab].sessionId);
     writeFileSync(process.env.E2E_SHOT, Buffer.from(shot.data, 'base64'));
     console.log(`截图: ${process.env.E2E_SHOT}`);

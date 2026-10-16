@@ -67,6 +67,52 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ---------------------------------------------------------------- 深色模式
+   同一张变量表换一套值, 别处一行都不用写 if (dark)。app.js 把 data-theme 设在 <html> 上
+   (选"跟随系统"时会跟着系统的深浅色走)。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #14161a;
+  --surface: #1c1f24;
+  --fill: #24282e;
+  --fill-hover: #2c323a;
+  --line: #2b3038;
+  --line-strong: #3b424c;
+
+  --text: #e6e8ec;
+  --text-2: #b4bac4;
+  --text-3: #98a0ab;   /* 深底上要再亮一点才够 4.5:1 */
+
+  --brand: #3b7ddd;
+  --brand-hover: #4d8ce8;
+  --brand-weak: #1a2a44;
+  --on-brand: #ffffff;
+
+  --danger: #e5484d;
+  --danger-hover: #c93a3f;
+  --danger-text: #ff9c94;
+  --danger-weak: #3a1e1d;
+  --danger-line: #5a2c2b;
+  --success: #3ecf63;
+
+  --video: #101216;
+  --video-2: #1a1d22;
+  /* --on-video* 那几个本来就是"深底上的颜色", 不用换 */
+}
+
+/* 少数写死了浅色的地方, 深色下单独点名 */
+:root[data-theme="dark"] ::selection { background: #2a4a7a; }
+:root[data-theme="dark"] .input:hover { border-color: var(--line-strong); }
+:root[data-theme="dark"] .chip--lock { border-color: #6b5520; background: #362c12; color: #f0c000; }
+:root[data-theme="dark"] .audiohint { border-color: #5a4a1f; background: #33290f; color: #e8c46a; }
+:root[data-theme="dark"] .audiohint:hover { background: #3d3113; }
+:root[data-theme="dark"] .modal__mask { background: rgb(0 0 0 / .6); }
+:root[data-theme="dark"] .modal__card { box-shadow: 0 18px 50px rgb(0 0 0 / .55); }
+/* 滚动条: 一条全局规则盖掉前面写死的浅灰 */
+:root[data-theme="dark"] * { scrollbar-color: #3b424c transparent; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #3b424c; }
+
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body { height: 100%; }
