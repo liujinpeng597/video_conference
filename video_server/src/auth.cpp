@@ -41,20 +41,6 @@ std::string sha256Hex(const std::string& s) {
     return toHex(h, sizeof h);
 }
 
-bool hashPassword(const std::string& pass, std::string* out) {
-    char buf[crypto_pwhash_STRBYTES];
-    if (crypto_pwhash_str(buf, pass.c_str(), pass.size(), crypto_pwhash_OPSLIMIT_INTERACTIVE,
-                          crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0) {
-        return false;
-    }
-    *out = buf;
-    return true;
-}
-
-bool verifyPassword(const std::string& hash, const std::string& pass) {
-    return crypto_pwhash_str_verify(hash.c_str(), pass.c_str(), pass.size()) == 0;
-}
-
 // ---------------------------------------------------------------- 输入校验
 // 信任边界上的检查, 不能省。
 
@@ -169,6 +155,21 @@ bool mintTokens(long long userId, const std::string& username, bool remember, Re
 }
 
 }  // namespace
+
+// 放在匿名命名空间外面: 房间密码也走同一套 (Argon2id, 自带盐)。
+bool hashPassword(const std::string& pass, std::string* out) {
+    char buf[crypto_pwhash_STRBYTES];
+    if (crypto_pwhash_str(buf, pass.c_str(), pass.size(), crypto_pwhash_OPSLIMIT_INTERACTIVE,
+                          crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0) {
+        return false;
+    }
+    *out = buf;
+    return true;
+}
+
+bool verifyPassword(const std::string& hash, const std::string& pass) {
+    return crypto_pwhash_str_verify(hash.c_str(), pass.c_str(), pass.size()) == 0;
+}
 
 void init() {
     if (sodium_init() < 0) {

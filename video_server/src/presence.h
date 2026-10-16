@@ -62,12 +62,18 @@ bool whereAmI(const std::string& token, Me* me, std::string* err);
 // 这个房间号现在有人吗 (用来避免分配重复的房间号)
 bool roomLive(const std::string& room, bool* out, std::string* err);
 
-enum class Enter { Ok, Full, Locked, Error };
+enum class Enter { Ok, Full, Locked, NeedsPass, BadPass, Error };
 
 // 进房间。会清掉上一个房间留下的信令, 不然会去连一个已经不在的人。
+// pass 是会议密码 (存房间 hash 的 @pass 字段, Argon2id 哈希, 跟着房间 TTL 一起过期):
+//   全新的房间由第一个进来的人定密码 —— 留空 = 普通房间, 非空 = 加密房间。
+//   房间已经有 @pass (哪怕人都走光了, TTL 还没到) 就沿用, 进来要验密码
+//   (NeedsPass / BadPass); 普通房间忽略这个参数。
+//   已经在房间里的人重新进 (刷新页面) 不用再输一次。
 // 成功时 *pid 是新分配的信令地址 (每次进房间都换一个)。
 Enter enter(const std::string& token, const std::string& user, const std::string& room,
-            std::string* pid, std::vector<Member>* members, std::string* err);
+            const std::string& pass, std::string* pid, std::vector<Member>* members,
+            std::string* err);
 
 // 心跳 + 取回成员列表和信令收件箱。不在房间里时 *room 为空。
 // *hostPid 是主持人的 pid (没有主持人时为空串) —— 主持人 = 建房的人。

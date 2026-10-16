@@ -49,6 +49,8 @@
   let levelTimer = 0;
   let prevPids = new Set();        // 上一拍的成员, 用来"有人进/出"提示音
   let prevHands = new Map();       // pid -> 上一拍有没有举手
+  // 自己的预览: 首页右侧一个, "创建会议"弹窗里还有一个, 可能同时在 (不能用单个 ref)
+  const previewEls = [];
   // 屏幕共享和防锁屏的真实对象同理: MediaStream / WakeLockSentinel 都不能进响应式
   let shareStream = null;          // 正在共享的 getDisplayMedia 流
   // 虚拟背景(简易人像模式)的处理链路: 摄像头 -> 隐藏 video -> canvas -> captureStream
@@ -111,6 +113,12 @@
         history: [],        // 会议历史 (room_visits 表): [{ room, joined, left, seconds }]
         showAllHistory: false,
         joinOpen: false,    // "加入会议"弹窗: 房间号输入框只在弹窗里出现
+        joinPass: '',       // 加入加密会议时填的密码
+        needsPass: false,   // 服务端说这个会议要密码 (428) 时掀开密码输入框
+        createOpen: false,  // "创建会议"弹窗: 本地预览 + 要不要设会议密码
+        createPass: false,  // 勾了才建加密房间
+        createPassInput: '',
+        roomEncrypted: false,   // 当前这个会议是加密的 (顶栏显示一枚"已加密"标签)
         todayDay: '',
         todayWeek: '',
 
@@ -170,7 +178,6 @@
         bgMode: 'off',              // 虚拟背景(简易人像): 'off' | 'blur' | 'solid'
         focusPid: '',               // 点某格放大 (演示者视图); 空 = 宫格
         copied: false,
-        videoEl: null,
         syncTimer: 0,
         clockTimer: 0,
         healthTimer: 0,
@@ -222,8 +229,8 @@
 
       // 会议里的键盘快捷键: m 静音 / v 关摄像头 / f 全屏。输入框里打字时不抢键。
       window.addEventListener('keydown', (e) => {
-        if (this.joinOpen) {                             // 加入会议弹窗开着: 只认 Esc
-          if (e.key === 'Escape') { e.preventDefault(); this.closeJoin(); }
+        if (this.joinOpen || this.createOpen) {          // 弹窗开着: 只认 Esc
+          if (e.key === 'Escape') { e.preventDefault(); this.closeJoin(); this.closeCreate(); }
           return;
         }
         if (this.view !== 'room') return;
@@ -268,13 +275,17 @@
         return s ? s.slice(0, 1) : '?';
       },
 
-      // 自己的预览。视频元素会因为切视图被换掉, 所以用函数 ref。
+      // 自己的预览。视频元素会因为切视图 / 弹窗开合被换掉, 所以用函数 ref, 并且记一个集合
+      // (首页和"创建会议"弹窗里各有一个, 可能同时在)。
       bindVideo(el) {
-        this.videoEl = el;
+        if (!el) return;
+        for (let i = previewEls.length - 1; i >= 0; --i) {
+          if (!previewEls[i].isConnected) previewEls.splice(i, 1);   // 换掉的元素顺手清出集合
+        }
+        if (!previewEls.includes(el)) previewEls.push(el);
         // 只在"真的换了流"时才赋值: srcObject 一赋值就会触发 <video> 的加载算法
         // (emptied -> loadstart -> loadeddata), 画面会黑一下再回来。这个函数 ref 在每次
         // 重渲染时都会被调用 (计时器每秒一次 + 每拍轮询), 不加这个判断就是每秒闪一下。
-        if (!el) return;
         const want = this.localSource();
         if (el.srcObject !== want) el.srcObject = want;
       },
@@ -286,7 +297,8 @@
         return this.media.stream;
       },
       syncPreview() {
-        if (this.videoEl) this.videoEl.srcObject = this.localSource();
+        const want = this.localSource();
+        for (const el of previewEls) if (el.srcObject !== want) el.srcObject = want;
       },
 
       // 远端画面同理, 但要按 pid 分开管
@@ -384,11 +396,20 @@
       // "加入会议"那个大按钮: 弹出加入会议弹窗, 焦点落到房间号输入框
       focusJoin() {
         this.errors = {};
+        this.needsPass = false;   // 重新走一遍, 上回"要密码"的状态不留着
         this.joinOpen = true;
         this.$nextTick(() => { const el = this.$refs.roomInput; if (el) el.focus(); });
       },
       closeJoin() {
         this.joinOpen = false;
+      },
+      // "创建会议"那个大按钮: 弹出创建弹窗 (本地预览 + 可选会议密码)
+      openCreate() {
+        this.errors = {};
+        this.createOpen = true;
+      },
+      closeCreate() {
+        this.createOpen = false;
       },
       // 最近会议里的"进入": 填上房间号直接进
       rejoin(code) {
@@ -712,27 +733,32 @@
         if (m) this.roomInput = m[1].toLowerCase();
       },
 
-      // 加入别人的会议 (必须填房间号)
+      // 加入别人的会议 (必须填房间号; 加密会议还要密码)
       async joinRoom() {
         const code = this.roomInput.trim();
         if (!code) {
           this.errors = { form: '要加入别人的会议请先填房间号；想开新会议就点下面的「创建会议」。' };
           return;
         }
-        await this.enterRoom(code);
+        await this.enterRoom(code, this.joinPass);
       },
 
-      // 创建新会议: 不带房间号, 服务端分配一个
+      // 创建新会议: 不带房间号, 服务端分配一个。勾了"设置会议密码"就是加密房间
       async createRoom() {
-        await this.enterRoom('');
+        const pass = this.createPass ? this.createPassInput.trim() : '';
+        if (pass && pass.length < 4) {
+          this.errors = { form: '会议密码至少 4 位' };
+          return;
+        }
+        await this.enterRoom('', pass);
       },
 
-      async enterRoom(code) {
+      async enterRoom(code, pass) {
         this.errors = {};
         this.actx();   // 趁着这次点击把手势用在解锁音频上下文上 (提示音要用)
         this.busy = true;
         try {
-          const r = await this.authed('POST', '/api/rooms/enter', { room: code });
+          const r = await this.authed('POST', '/api/rooms/enter', { room: code, pass: pass || '' });
           // 提示音基线要在 applyRoom 之前清: 不然它会拿"上一个房间的人"当基线 (进门就响一声)
           prevPids.clear();
           prevHands.clear();
@@ -749,6 +775,12 @@
           this.startLevelTimer();
           this.view = 'room';
           this.joinOpen = false;   // 进房之后弹窗收掉
+          this.createOpen = false;
+          this.joinPass = '';
+          this.needsPass = false;
+          this.roomEncrypted = !!pass;   // 带密码进来的就是加密会议 (普通房间不显示这枚标签)
+          this.createPass = false;       // 下次创建从"不加密"重新开始
+          this.createPassInput = '';
           this.acquireWakeLock();  // 手机端尽量别锁屏 (锁屏后 JS 被挂起, 会被判掉线)
           this.roomInput = '';
           this.scheduleSync(0);
@@ -759,6 +791,11 @@
         } catch (err) {
           if (err.dead) {
             this.sessionDead('登录状态已失效，重新登录一下');
+          } else if (err.status === 428) {
+            // 加密会议: 这不是"错误", 是把密码输入框掀开让用户接着填
+            this.needsPass = true;
+            this.joinOpen = true;   // 从"最近会议"直接点进来的, 也得能看到这个输入框
+            this.$nextTick(() => { const el = this.$refs.passInput; if (el) el.focus(); });
           } else {
             this.errors = { form: err.message };
           }

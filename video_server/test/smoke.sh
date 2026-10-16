@@ -867,6 +867,64 @@ call POST /api/rooms/leave '{}' "$TOKEN_LK"
 call POST /api/rooms/leave '{}' "$TOKEN_LK2"
 
 echo
+echo "---- 会议密码 (加密房间) ----"
+# 建房时带 pass = 加密房间 (房间号 + 密码才能进); 不带 = 普通房间。两者都能锁定。
+USER_ENC="en$SUF"
+USER_ENC2="enb$SUF"
+USER_ENC3="enc$SUF"
+call POST /api/register "{\"username\":\"$USER_ENC\",\"password\":\"hunter2\"}"
+TOKEN_ENC=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_ENC2\",\"password\":\"hunter2\"}"
+TOKEN_ENC2=$(jstr token)
+call POST /api/register "{\"username\":\"$USER_ENC3\",\"password\":\"hunter2\"}"
+TOKEN_ENC3=$(jstr token)
+
+call POST /api/rooms/enter '{"pass":"roompass8"}' "$TOKEN_ENC"
+check "带密码建房 200" "200" "$(status)"
+ENCROOM=$(jstr room)
+check "加密房间也自动分配房间号" "1" "$(printf '%s' "$ENCROOM" | grep -c '^[1-9][0-9]\{8\}$')"
+
+# 428 = "要密码" (不是错误): 前端看到它就掀开密码输入框
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\"}" "$TOKEN_ENC2"
+check "进加密房间不给密码 428" "428" "$(status)"
+contains "说得清是要密码" "$(body)" '需要密码'
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\",\"pass\":\"wrongpass\"}" "$TOKEN_ENC2"
+check "密码不对 403" "403" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\",\"pass\":\"roompass8\"}" "$TOKEN_ENC2"
+check "密码对能进 200" "200" "$(status)"
+check "加密房间里 2 个人" "2" "$(jcount name)"
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\"}" "$TOKEN_ENC2"
+check "已经在里面的人重新进不用再输密码 200" "200" "$(status)"
+
+# 加密房间照样能锁定 (锁和密码互不影响), 锁上以后密码对也进不去。
+# 注意"人走光了房间就没了"(leave 会整把删掉, 见 presence.cpp) —— 所以密码只在房间活着期间有用。
+call POST /api/rooms/lock '{"locked":true}' "$TOKEN_ENC"
+check "加密房间也能锁定 (主持人) 200" "200" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\",\"pass\":\"roompass8\"}" "$TOKEN_ENC3"
+check "锁上的加密房间, 密码对也进不去 403" "403" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\"}" "$TOKEN_ENC3"
+check "锁上的加密房间, 不给密码也还是 403 (先判锁, 不泄露要不要密码)" "403" "$(status)"
+call POST /api/rooms/lock '{"locked":false}' "$TOKEN_ENC"
+check "解锁 200" "200" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$ENCROOM\",\"pass\":\"roompass8\"}" "$TOKEN_ENC3"
+check "解锁后凭密码能进 200" "200" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_ENC3"
+
+# 普通房间: 不设密码, 别人不用带密码
+call POST /api/rooms/enter '{}' "$TOKEN_ENC"
+PLAINROOM=$(jstr room)
+check "不带密码建房是普通房间 200" "200" "$(status)"
+call POST /api/rooms/enter "{\"room\":\"$PLAINROOM\"}" "$TOKEN_ENC2"
+check "普通房间不要密码 200" "200" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_ENC2"
+
+# 密码长度 (信任边界上的检查)
+call POST /api/rooms/enter '{"pass":"123"}' "$TOKEN_ENC"
+check "会议密码太短 400" "400" "$(status)"
+call POST /api/rooms/leave '{}' "$TOKEN_ENC"
+call POST /api/rooms/leave '{}' "$TOKEN_ENC3"
+
+echo
 echo "---- 路由 ----"
 call GET /api/nope
 check "未知接口 404" "404" "$(status)"

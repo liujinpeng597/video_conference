@@ -416,13 +416,103 @@ try {
     console.error(`加入会议弹窗断言失败: ${JSON.stringify(joinUi)}`);
   }
   if (process.env.E2E_SHOT_JOIN) {   // 人工看弹窗长什么样 (CI 不设就不跑)
-    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; vm.focusJoin(); await vm.$nextTick(); return true; })()`);
+    // 顺便把"要密码"那一档也掀开, 截图能看到加密会议的加入弹窗
+    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; vm.focusJoin(); vm.needsPass = true; await vm.$nextTick(); return true; })()`);
     await sleep(300);
     const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
     writeFileSync(process.env.E2E_SHOT_JOIN, Buffer.from(s.data, 'base64'));
     console.log(`截图(加入会议弹窗): ${process.env.E2E_SHOT_JOIN}`);
     await evalIn(cdp, pages[0].sessionId, `(() => { (${VM}).closeJoin(); return true; })()`);
   }
+
+  // 会议密码: "创建会议"弹窗 (本地预览 + 可选密码) -> 加密房间 -> 另一个人进的时候要密码
+  if (process.env.E2E_SHOT_CREATE) {   // 人工看创建弹窗长什么样 (CI 不设就不跑)
+    await activate(cdp, pages[0].sessionId);
+    await evalIn(cdp, pages[0].sessionId, `(async () => { const vm = ${VM}; vm.openCreate(); vm.createPass = true; await vm.$nextTick(); return true; })()`);
+    await sleep(400);
+    const s = await cdp.send('Page.captureScreenshot', { format: 'png' }, pages[0].sessionId);
+    writeFileSync(process.env.E2E_SHOT_CREATE, Buffer.from(s.data, 'base64'));
+    console.log(`截图(创建会议弹窗): ${process.env.E2E_SHOT_CREATE}`);
+    await evalIn(cdp, pages[0].sessionId, `(() => { const vm = ${VM}; vm.closeCreate(); vm.createPass = false; return true; })()`);
+  }
+  const enc = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const out = {};
+      vm.openCreate();
+      await vm.$nextTick();
+      out.hasTitle = !!document.querySelector('.modal #create-title');
+      out.previews = document.querySelectorAll('.preview__frame video').length;   // 首页一个 + 弹窗一个
+      out.bound = [...document.querySelectorAll('.preview__frame video')].every((v) => !!v.srcObject);
+      out.devbtns = document.querySelectorAll('.modal .devbtn').length;
+      out.passFieldHidden = !document.querySelector('.modal #f-cpass');
+      vm.createPass = true;
+      await vm.$nextTick();
+      out.passFieldShown = !!document.querySelector('.modal #f-cpass');
+      vm.createPassInput = 'sekret123';
+      await vm.createRoom();                     // 建一个加密房间
+      out.room = vm.room;
+      out.encrypted = vm.roomEncrypted;
+      out.closed = !vm.createOpen;
+      await vm.$nextTick();
+      await new Promise((r) => setTimeout(r, 400));   // 视图切换是淡入淡出, 等它放完
+      out.chip = [...document.querySelectorAll('.topbar .chip')].some((e) => e.textContent.includes('已加密'));
+      return out;
+    })()`);
+  if (enc.hasTitle && enc.previews === 2 && enc.bound && enc.devbtns === 2 && enc.passFieldHidden &&
+      enc.passFieldShown && enc.room && enc.encrypted && enc.closed && enc.chip) {
+    console.log(`创建会议弹窗: 本地预览 ${enc.previews} 个都挂上了流, 麦克风/摄像头 ${enc.devbtns} 个按钮, 勾选后才出现密码框`);
+  } else {
+    failed = true;
+    console.error(`创建会议弹窗断言失败: ${JSON.stringify(enc)}`);
+  }
+
+  await activate(cdp, pages[1].sessionId);
+  const joinEnc = await evalIn(cdp, pages[1].sessionId, `(async () => {
+      const vm = ${VM};
+      const out = {};
+      vm.focusJoin();
+      await vm.$nextTick();
+      vm.roomInput = ${JSON.stringify(enc.room)};
+      vm.joinPass = '';
+      await vm.joinRoom();                       // 第一次不给密码: 服务端回 428 -> 掀开密码框
+      out.askedForPass = vm.needsPass && !!document.querySelector('#f-pass');
+      out.stillOut = vm.view !== 'room';
+      out.noError = !vm.errors.form;
+      vm.joinPass = 'sekret123';
+      await vm.joinRoom();
+      out.joined = vm.view === 'room' && vm.room === ${JSON.stringify(enc.room)};
+      out.encrypted = vm.roomEncrypted;
+      await vm.leave();
+      await vm.$nextTick();
+      return out;
+    })()`);
+  if (joinEnc.askedForPass && joinEnc.stillOut && joinEnc.noError && joinEnc.joined && joinEnc.encrypted) {
+    console.log('加入加密会议: 不给密码只是被要到密码 (不是报错), 补上就进去了');
+  } else {
+    failed = true;
+    console.error(`加入加密会议断言失败: ${JSON.stringify(joinEnc)}`);
+  }
+
+  const badPass = await evalIn(cdp, pages[1].sessionId, `(async () => {
+      const vm = ${VM};
+      vm.focusJoin();
+      await vm.$nextTick();
+      vm.roomInput = ${JSON.stringify(enc.room)};
+      vm.needsPass = true;
+      vm.joinPass = 'nope-nope';
+      await vm.joinRoom();
+      const out = { view: vm.view, err: vm.errors.form || '' };
+      vm.closeJoin();
+      return out;
+    })()`);
+  if (badPass.view === 'home' && /密码/.test(badPass.err)) {
+    console.log(`加入加密会议: 密码不对会明说 (${badPass.err})`);
+  } else {
+    failed = true;
+    console.error(`密码不对断言失败: ${JSON.stringify(badPass)}`);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(async () => { await (${VM}).leave(); return true; })()`);
+  await activate(cdp, pages[0].sessionId);
 
   const room = await evalIn(cdp, pages[0].sessionId, enter(''));
   console.log(`房间号: ${room}`);

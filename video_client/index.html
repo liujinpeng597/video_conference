@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=24">
+<link rel="stylesheet" href="app.css?v=25">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -133,7 +133,7 @@
                 <span class="tilebtn__ico"><svg class="icon" aria-hidden="true"><use href="#ic-plus"></use></svg></span>
                 加入会议
               </button>
-              <button class="tilebtn" type="button" @click="createRoom" :disabled="busy">
+              <button class="tilebtn" type="button" @click="openCreate" :disabled="busy">
                 <span class="tilebtn__ico"><svg class="icon" aria-hidden="true"><use href="#ic-bolt"></use></svg></span>
                 创建会议
               </button>
@@ -317,6 +317,7 @@
         <div class="topbar__right">
           <span class="chip">{{ participants.length }} 人在线</span>
           <span class="chip chip--lock" v-if="locked" title="会议已锁定，新人进不来">已锁定</span>
+          <span class="chip chip--lock" v-if="roomEncrypted" title="加密会议：进来的人要输密码">已加密</span>
           <button class="btn btn--text" :class="{ on: !!focusPid }" type="button" @click="cycleLayout" title="布局：宫格 / 我最大 / 主持人最大">{{ layoutName() }}</button>
           <button class="btn btn--text" type="button" @click="toggleFullscreen" title="全屏 (快捷键 f)">全屏</button>
           <button class="btn btn--text" type="button" v-if="amHost" @click="toggleLock">
@@ -523,11 +524,70 @@
                  spellcheck="false" autocapitalize="off" inputmode="numeric" placeholder="别人给你的房间号">
           <p class="field__hint">别人把房间号（或邀请链接）给你，填这里进去。</p>
         </div>
+        <!-- 加密会议: 服务端回 428 之后才掀开 (见 enterRoom) -->
+        <div class="field" v-if="needsPass">
+          <label class="field__label" for="f-pass">会议密码</label>
+          <input id="f-pass" ref="passInput" class="input" type="password" v-model.trim="joinPass"
+                 autocomplete="off" placeholder="房主给你的会议密码">
+          <p class="field__hint">这个会议已加密，房间号 + 密码才能进。</p>
+        </div>
         <p class="formerr" role="alert" v-if="errors.form">
           <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ errors.form }}
         </p>
         <button class="btn btn--primary btn--block" type="submit" :disabled="busy">
           {{ busy ? '正在进入' : '加入会议' }}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================ 创建会议弹窗 ============================
+       点"创建会议"才弹出来: 先看一眼自己的画面/声音, 再决定要不要设会议密码。 -->
+  <div class="modal" v-if="createOpen && view === 'home'">
+    <div class="modal__mask" @click="closeCreate()"></div>
+    <div class="modal__card" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="modal__head">
+        <h2 class="card__title" id="create-title">创建会议</h2>
+        <button class="modal__x" type="button" @click="closeCreate()" aria-label="关闭">
+          <svg class="icon" aria-hidden="true"><use href="#ic-x"></use></svg>
+        </button>
+      </div>
+      <div class="preview">
+        <div class="preview__frame">
+          <video :ref="bindVideo" class="preview__video" autoplay playsinline muted v-show="camOn"></video>
+          <div class="preview__off" v-if="!camOn || !media.stream">
+            <svg class="icon icon--lg" aria-hidden="true"><use href="#ic-video-off"></use></svg>
+            <p>{{ media.stream ? '摄像头关着' : '摄像头没打开' }}</p>
+          </div>
+        </div>
+        <div class="devrow">
+          <button class="devbtn" type="button" @click="toggleMic"
+                  :disabled="!media.stream" :aria-pressed="micOn">
+            <svg class="icon" aria-hidden="true"><use :href="micOn ? '#ic-microphone' : '#ic-microphone-off'"></use></svg>
+            <span>{{ micOn ? '麦克风已开' : '已静音' }}</span>
+          </button>
+          <button class="devbtn" type="button" @click="toggleCam"
+                  :disabled="!media.stream" :aria-pressed="camOn">
+            <svg class="icon" aria-hidden="true"><use :href="camOn ? '#ic-video' : '#ic-video-off'"></use></svg>
+            <span>{{ camOn ? '摄像头已开' : '已关闭' }}</span>
+          </button>
+        </div>
+      </div>
+      <form class="form" novalidate @submit.prevent="createRoom">
+        <label class="check">
+          <input type="checkbox" v-model="createPass"> 设置会议密码（加密房间）
+        </label>
+        <div class="field" v-if="createPass">
+          <label class="field__label" for="f-cpass">会议密码</label>
+          <input id="f-cpass" class="input" type="password" v-model.trim="createPassInput"
+                 autocomplete="new-password" placeholder="至少 4 个字符">
+          <p class="field__hint">参会的人要同时拿到房间号和密码才能进。不勾选就是普通房间，只要房间号。</p>
+        </div>
+        <p class="formerr" role="alert" v-if="errors.form">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#ic-alert-triangle"></use></svg>{{ errors.form }}
+        </p>
+        <button class="btn btn--primary btn--block" type="submit" :disabled="busy">
+          {{ busy ? '正在创建' : '创建会议' }}
         </button>
       </form>
     </div>
@@ -646,7 +706,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=24"></script>
-<script src="app.js?v=24"></script>
+<script src="vendor/vue.global.prod.js?v=25"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

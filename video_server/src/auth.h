@@ -49,6 +49,10 @@ Check whoAmI(const std::string& token, std::string* username, std::string* error
 // 退出登录: 删掉这个会话; 传了 rememberToken 就一起删 (退出登录 = 忘掉我)。
 Check logout(const std::string& token, const std::string& rememberToken, std::string* error);
 
+// 密码哈希 / 校验 (libsodium Argon2id, 自带盐)。账号密码用它, 房间密码也用它。
+bool hashPassword(const std::string& pass, std::string* out);
+bool verifyPassword(const std::string& hash, const std::string& pass);
+
 // 改密码: 校验旧密码 -> 校验新密码 -> 换哈希 -> 把其它令牌全部吊销 (只留当前这枚会话),
 // 于是别的设备会被踢下去重新登录。
 Result changePassword(const std::string& token, const std::string& oldPassword,

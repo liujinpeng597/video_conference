@@ -5,6 +5,7 @@
 
 #include "random.h"
 #include "redis.h"
+#include "auth.h"
 
 namespace presence {
 namespace {
@@ -30,6 +31,7 @@ constexpr char kSep = '\x1f';
 // 的名字不会撞上; 它不是成员 —— parseMember 解析不出来会当成"不在", peersJson 会跳过。
 constexpr char kHostField[] = "@host";
 constexpr char kLockField[] = "@locked";   // "1" = 会议锁定, 只有主持人能进
+constexpr char kPassField[] = "@pass";     // 会议密码的 Argon2id 哈希; 有这个字段 = 加密房间
 
 int64_t nowMs() {
     using namespace std::chrono;
@@ -155,7 +157,8 @@ bool roomLive(const std::string& room, bool* out, std::string* err) {
 }
 
 Enter enter(const std::string& token, const std::string& user, const std::string& room,
-            std::string* pid, std::vector<Member>* members, std::string* err) {
+            const std::string& pass, std::string* pid, std::vector<Member>* members,
+            std::string* err) {
     const int64_t now = nowMs();
 
     // 重新进来时把自己的标志清回默认: 没举手 (麦克风由前端进房后立刻上报一次)
@@ -174,9 +177,11 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     bool alreadyHere = false;
     std::string hostToken;
     bool locked = false;
+    std::string passHash;   // 非空 = 这是个加密房间
     for (const redis::Field& f : fields) {
         if (f.name == kHostField) { hostToken = f.value; continue; }
         if (f.name == kLockField) { locked = (f.value == "1"); continue; }
+        if (f.name == kPassField) { passHash = f.value; continue; }
         Member m = parseMember(f.name, f.value, now);
         if (m.live) ++live;
         if (m.token == token) alreadyHere = true;
@@ -186,6 +191,13 @@ Enter enter(const std::string& token, const std::string& user, const std::string
     if (!alreadyHere && live >= kMaxRoomPeers) return Enter::Full;
     // 会议锁上以后, 只有主持人还能进来 (已经在里面的人不受影响)
     if (!alreadyHere && locked && token != hostToken) return Enter::Locked;
+    // 加密房间: 只要这个房间 hash 里还留着 @pass (哪怕人都走光了, 60 秒 TTL 内),
+    // 就得验密码 —— 不然"主持人出去再进来"就把密码弄丢了。
+    // 已经在里面的人重新进 (刷新 / 重连) 不用再输一次。
+    if (!alreadyHere && !passHash.empty()) {
+        if (pass.empty()) return Enter::NeedsPass;
+        if (!auth::verifyPassword(passHash, pass)) return Enter::BadPass;
+    }
 
     *pid = rnd::hex(6);  // 每次进房间换一个地址, 免得被人拿旧的乱发
 
@@ -203,6 +215,13 @@ Enter enter(const std::string& token, const std::string& user, const std::string
         if (!redis::del(chatSeqKey(room), err)) return Enter::Error;
         // 建房的人就是主持人 (房间 hash 里一个特殊字段, 跟着房间 TTL 一起过期)
         if (!redis::hSet(roomKey(room), kHostField, token, err)) return Enter::Error;
+        // 只有全新的房间才在这里定密码 (非空 = 加密, 空 = 普通)。
+        // 沿用老房间 (@pass 还在) 的情况在上面已经验过了, 不覆盖它。
+        if (passHash.empty() && !pass.empty()) {
+            std::string hash;
+            if (!auth::hashPassword(pass, &hash)) return Enter::Error;
+            if (!redis::hSet(roomKey(room), kPassField, hash, err)) return Enter::Error;
+        }
     }
 
     // 上面的 HGETALL 是在写我之前跑的, 所以自己得补进去

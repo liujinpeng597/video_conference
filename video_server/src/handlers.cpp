@@ -615,6 +615,14 @@ Resp apiRoomsEnter(const Request& req) {
     std::string raw;
     const bool asked = json::getString(req.body, "room", &raw) && !raw.empty();
 
+    // 会议密码, 可选。建房时留空 = 普通房间, 非空 = 加密房间 (房间号 + 密码才能进);
+    // 进别人的房间时带上它, 服务端只对加密房间校验。信任边界上的长度检查不能省。
+    std::string pass;
+    json::getString(req.body, "pass", &pass);
+    if (!pass.empty() && (pass.size() < 4 || pass.size() > 64)) {
+        return errJson(400, "会议密码要 4-64 个字符");
+    }
+
     std::string err;
     if (asked) {
         raw = normalizeRoom(raw);
@@ -642,7 +650,7 @@ Resp apiRoomsEnter(const Request& req) {
 
     std::string pid;
     std::vector<presence::Member> members;
-    switch (presence::enter(req.token, display, raw, &pid, &members, &err)) {
+    switch (presence::enter(req.token, display, raw, pass, &pid, &members, &err)) {
         case presence::Enter::Ok:
             // 会议生命周期事件 -> Kafka (可选, 尽力而为; 见 events.h)。
             // 房间号自动分配 = 这次进房顺带建了个新房间。
@@ -661,6 +669,12 @@ Resp apiRoomsEnter(const Request& req) {
             return errJson(409, "房间满了");
         case presence::Enter::Locked:
             return errJson(403, "会议已锁定，主持人解锁后才能进");
+        // 428 (Precondition Required): 前端看到它就把密码输入框掀开, 让用户接着填。
+        // 特意不用 401 —— 前端把 401 当成"会话过期", 会去换令牌再重试。
+        case presence::Enter::NeedsPass:
+            return errJson(428, "这个会议需要密码");
+        case presence::Enter::BadPass:
+            return errJson(403, "会议密码不对");
         default:
             return errJson(500, "进房间失败：" + err);
     }

@@ -534,15 +534,17 @@ button, input { font-family: inherit; }
   position: fixed;
   inset: 0;
   z-index: 50;
-  display: grid;
-  place-items: center;
+  /* flex + margin:auto 而不是 place-items:center: 弹窗比窗口高时 (创建会议弹窗就是),
+     center 会把顶端顶出可滚区域、滚不回去; auto 边距在空间不够时会退化成 0。 */
+  display: flex;
   padding: 20px;
   overflow: auto;
 }
-.modal__mask { position: absolute; inset: 0; background: rgb(15 18 23 / .45); }
+.modal__mask { position: fixed; inset: 0; background: rgb(15 18 23 / .45); }
 .modal__card {
   position: relative;
   width: min(420px, 100%);
+  margin: auto;
   padding: 20px;
   background: var(--surface);
   border-radius: var(--r-lg);
@@ -550,6 +552,8 @@ button, input { font-family: inherit; }
 }
 .modal__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .modal__head .card__title { margin-bottom: 0; }
+/* 创建会议弹窗: 上面是预览, 下面才是表单, 中间留一口气 */
+.modal__card .preview + .form { margin-top: 16px; }
 .modal__x {
   display: inline-flex;
   padding: 4px;
