@@ -813,6 +813,22 @@ button, input { font-family: inherit; }
   color: #8a5a00;
   font-size: 13px;
 }
+/* 实时字幕: 舞台上方一条只读的横条 (说出来的话在这里滚) */
+.captions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 1000px;
+  margin-inline: auto;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.captions__text { margin: 0; font-size: 15px; color: var(--text); }
+.captions__note { margin: 0; font-size: 12px; color: var(--text-3); }
 
 /* 名字贴条: 视频块上的必要信息 (这是谁), 不是装饰 */
 .tile__tag {

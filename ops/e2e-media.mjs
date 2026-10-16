@@ -675,19 +675,12 @@ try {
       await vm.$nextTick();
       const rows = document.querySelectorAll('.prow').length;
       const acts = document.querySelectorAll('.prow__act .btn').length;
-      // 网络诊断: 我自己那行 + 每个对端一行, 且已经能判断直连还是中继
-      const diagRows = document.querySelectorAll('.diag__row').length;
-      const diagMine = vm.diagMine;
-      const remote = vm.remotes[0];
-      const diagPeer = remote ? vm.diagLine(remote) : '';
-      const peerPath = remote && vm.peerStats[remote.id] ? vm.peerStats[remote.id].path : '';
       vm.toggleMembers();
       await vm.$nextTick();
       const seq = [];
       for (let i = 0; i < 3; i++) { vm.cycleLayout(); seq.push(vm.focusPid); }
       vm.focusPid = '';
-      return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen,
-               diagRows, diagMine, diagPeer, peerPath };
+      return { rows, acts, seq, mine: vm.myPid, host: vm.host, closed: !vm.membersOpen };
     })()`);
   {   // 会中改名: 走真实 UI 路径 (点"改名" -> 填 -> 提交), 房间里要立刻变
     const rn = await evalIn(cdp, pages[0].sessionId, `(async () => {
@@ -784,13 +777,35 @@ try {
     })()`);
   const cycles = ui.seq.some((x) => x === '') && ui.seq.some((x) => x !== '');
   const hostMode = ui2.seq[0] === ui2.mine && ui2.seq[1] === ui2.host && ui2.seq[2] === '' && !!ui2.host;
-  const diagOk = ui.diagRows === 3 && /kbps|正在建立/.test(ui.diagMine) && /直连|中继/.test(ui.peerPath);
-  if (ui.rows === 3 && ui.acts >= 1 && cycles && hostMode && diagOk) {
+  if (ui.rows === 3 && ui.acts >= 1 && cycles && hostMode) {
     console.log(`成员面板: ${ui.rows} 行, 主持人有 ${ui.acts} 个操作按钮; 布局 宫格/我/主持人 正常`);
-    console.log(`网络诊断: 我 "${ui.diagMine}"; 对端 "${ui.diagPeer}" (判定: ${ui.peerPath})`);
   } else {
     failed = true;
-    console.error(`成员面板 / 布局 / 网络诊断断言失败: ${JSON.stringify({ ui, ui2, cycles, hostMode, diagOk })}`);
+    console.error(`成员面板 / 布局断言失败: ${JSON.stringify({ ui, ui2, cycles, hostMode })}`);
+  }
+
+  // 网络诊断: 采样器 2 秒一拍、第一拍只记基线, 所以这里要等它出数字 (别在进房那一瞬间就断言)
+  let diag = null;
+  for (let i = 0; i < 20; i++) {
+    await activate(cdp, pages[0].sessionId);
+    diag = await evalIn(cdp, pages[0].sessionId, `(async () => {
+        const vm = ${VM};
+        if (!vm.membersOpen) vm.toggleMembers();
+        await vm.$nextTick();
+        const remote = vm.remotes[0];
+        const s = remote && vm.peerStats[remote.id];
+        return { rows: document.querySelectorAll('.diag__row').length, mine: vm.diagMine,
+                 peer: remote ? vm.diagLine(remote) : '', path: s ? (s.path || '') : '' };
+      })()`);
+    if (diag && /kbps/.test(diag.mine) && /直连|中继/.test(diag.path)) break;
+    await sleep(700);
+  }
+  await evalIn(cdp, pages[0].sessionId, `(() => { const vm = ${VM}; if (vm.membersOpen) vm.toggleMembers(); return true; })()`);
+  if (diag && diag.rows === 3 && /kbps/.test(diag.mine) && /直连|中继/.test(diag.peer)) {
+    console.log(`网络诊断: 我 "${diag.mine}"; 对端 "${diag.peer}"`);
+  } else {
+    failed = true;
+    console.error(`网络诊断断言失败: ${JSON.stringify(diag)}`);
   }
 
   if (roomBox.stage > roomBox.w * 0.7 && roomBox.ctlTop > roomBox.vh * 0.7) {
@@ -1193,6 +1208,26 @@ try {
   }
   if (reactOk) console.log('表情反应: 对端收到了 👍');
   else { failed = true; console.error('表情反应断言失败: 对端没收到反应'); }
+
+  // 实时字幕: 按钮在, 打开有横条, 关掉清干净。这个环境里识别可能不可用 (没有语音服务),
+  // 但"用不了"必须说清原因, 不能让界面卡在打开状态。
+  const cap = await evalIn(cdp, pages[0].sessionId, `(async () => {
+      const vm = ${VM};
+      const btn = [...document.querySelectorAll('.ctl')].some((b) => b.textContent.includes('字幕'));
+      vm.toggleCaption();
+      await vm.$nextTick();
+      const out = { btn, on: vm.captionOn, bar: !!document.querySelector('.captions'), note: vm.captionNote || '' };
+      vm.stopCaption();
+      await vm.$nextTick();
+      out.off = !vm.captionOn && !document.querySelector('.captions');
+      return out;
+    })()`);
+  if (cap.btn && cap.off && (cap.on ? cap.bar : /支持|权限|出错|失败/.test(cap.note))) {
+    console.log(`实时字幕: 控制条有按钮; ${cap.on ? '打开后有字幕横条' : '这个环境用不了, 但说清了原因 (' + cap.note + ')'}; 关掉清干净`);
+  } else {
+    failed = true;
+    console.error(`实时字幕断言失败: ${JSON.stringify(cap)}`);
+  }
 
   // 阶段 6: 主持人 —— tab0 是建房的人 = 主持人; 只有它能看到"移出"按钮
   await activate(cdp, pages[0].sessionId);

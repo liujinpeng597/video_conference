@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>同频 · 视频会议</title>
 <!-- 改 app.css / app.js / vendor/*.js 时, 把下面的 ?v=N 一起加一 (nginx 缓存 1 小时, 见 nginx/nginx.conf) -->
-<link rel="stylesheet" href="app.css?v=36">
+<link rel="stylesheet" href="app.css?v=37">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -409,6 +409,13 @@
           你的网络好像不太稳，对方可能听不清、画面也会糊 —— 试试靠近路由器或者换成有线
         </p>
 
+        <!-- 实时字幕: 浏览器自带的语音识别, 不引模型也不连我们自己的服务器 ——
+             所以只有 Chrome / Edge 有, 而且认的是你麦克风里说的话 -->
+        <div class="captions" v-if="captionOn || captionNote">
+          <p class="captions__text" role="log" aria-live="polite">{{ captionText || (captionOn ? '在听…' : '') }}</p>
+          <p class="captions__note" v-if="captionNote">{{ captionNote }}</p>
+        </div>
+
         <div class="grid" :data-n="tiles" :class="{ 'is-focus': focusPid }">
           <!-- 整格是一颗"放大/缩小"的按钮: 键盘也要能按 (Tab 到它, 回车/空格放大) -->
           <article class="tile" tabindex="0" role="button"
@@ -584,6 +591,11 @@
                     @click="sendReaction(e)" :aria-label="'发送表情 ' + e">{{ e }}</button>
           </div>
         </div>
+        <button class="ctl" type="button" :class="{ 'ctl--on': captionOn }" @click="toggleCaption"
+                :aria-pressed="captionOn" aria-label="实时字幕（只认你麦克风里说的话）">
+          <svg class="icon" aria-hidden="true"><use href="#ic-message"></use></svg>
+          <span class="ctl__label">字幕</span>
+        </button>
         <button class="ctl ctl--chat" type="button" :class="{ 'ctl--on': chatOpen }" @click="toggleChat" :aria-expanded="chatOpen" aria-controls="room-chat">
           <svg class="icon" aria-hidden="true"><use href="#ic-message"></use></svg>
           <span class="ctl__label">聊天</span>
@@ -874,7 +886,7 @@
 </svg>
 <!--ICONS:END-->
 
-<script src="vendor/vue.global.prod.js?v=36"></script>
-<script src="app.js?v=36"></script>
+<script src="vendor/vue.global.prod.js?v=37"></script>
+<script src="app.js?v=37"></script>
 </body>
 </html>

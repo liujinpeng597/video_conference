@@ -40,6 +40,7 @@
 
   // 弹窗关掉之后把焦点还给打开它的那颗按钮 —— 键盘用户不至于掉到页面开头
   let modalOpener = null;
+  let recog = null;   // 实时字幕用的语音识别实例 (Web Speech API), 不进响应式
 
   const SYNC_IDLE_MS = 2000;   // 都连上了以后, 房间状态多久看一次
   const SYNC_BUSY_MS = 400;    // 还有连接没建好时多久看一次
@@ -134,6 +135,9 @@
         createPassInput: '',
         roomEncrypted: false,   // 当前这个会议是加密的 (顶栏显示一枚"已加密"标签)
         spot: '',               // 主持人设的"重点"是谁 (pid); 空 = 没设
+        captionOn: false,       // 实时字幕开着没
+        captionText: '',        // 当前这一句 (识别是流式的, 会一直覆盖)
+        captionNote: '',        // 字幕的说明 / 出错原因
         todayDay: '',
         todayWeek: '',
 
@@ -316,6 +320,7 @@
     beforeUnmount() {
       this.stopTimers();
       this.stopShare();
+      this.stopCaption();
       this.releaseWakeLock();
       this.closeAllCalls();
       this.stopMedia();
@@ -931,6 +936,55 @@
         const p = this.participants.find((x) => x.id === pid);
         return p ? p.name : '某人';
       },
+      // 实时字幕: 用浏览器自带的语音识别 (Web Speech API)。不引模型、不连我们自己的服务器,
+      // 所以: 只有 Chrome / Edge 有; 而且它认的是**本机麦克风里的话**, 不是所有人的声音。
+      toggleCaption() {
+        if (this.captionOn) { this.stopCaption(); return; }
+        const C = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!C) {
+          this.captionNote = '这个浏览器没有语音识别，字幕用不了（Chrome / Edge 支持）';
+          this.flash('这个浏览器不支持实时字幕');
+          return;
+        }
+        this.captionOn = true;
+        this.captionText = '';
+        this.captionNote = '只认你麦克风里说的话（不是所有人的声音）';
+        recog = new C();
+        recog.lang = 'zh-CN';
+        recog.continuous = true;
+        recog.interimResults = true;
+        recog.onresult = (e) => {
+          let text = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) text += e.results[i][0].transcript;
+          this.captionText = text.trim();
+        };
+        recog.onerror = (e) => {
+          const err = (e && e.error) || '未知';
+          this.captionNote = err === 'not-allowed'
+            ? '麦克风权限没给，字幕拿不到声音'
+            : '语音识别出错了（' + err + '），点一下「字幕」重开';
+          this.captionOn = false;   // onend 里看到 false 就不会自己重启, 避免死循环
+        };
+        recog.onend = () => {
+          // 识别是"说完一段就结束"的, 只要还开着就接着听
+          if (this.captionOn) { try { recog.start(); } catch (err) { /* 已经在跑了 */ } }
+        };
+        try {
+          recog.start();
+        } catch (err) {
+          this.captionOn = false;
+          this.captionNote = '字幕启动失败：' + (err.message || err);
+        }
+      },
+      stopCaption() {
+        this.captionOn = false;
+        this.captionText = '';
+        this.captionNote = '';
+        if (recog) {
+          try { recog.stop(); } catch (err) { /* ignore */ }
+          recog = null;
+        }
+      },
       // 网络诊断里每个人的一行: 状态 · 收/发 · 丢包 · 往返 · 直连还是中继
       diagLine(p) {
         const s = this.peerStats[p.id];
@@ -1493,6 +1547,7 @@
       droppedOut(msg) {
         this.stopTimers();
         this.stopShare();
+        this.stopCaption();
         this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();
@@ -1782,6 +1837,7 @@
       async leave() {
         this.stopTimers();
         this.stopShare();
+        this.stopCaption();
         this.stopBg();
         this.releaseWakeLock();
         this.closeAllCalls();
