@@ -491,6 +491,10 @@ try {
   const big = await evalIn(cdp, pages[0].sessionId, `(async () => {
       const vm = ${VM};
       vm.focusPid = '';
+      const gridTiles = [...document.querySelectorAll('.grid .tile')].map((e) => {
+        const r = e.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      });
       vm.cycleLayout();                       // 宫格 -> 我最大
       await vm.$nextTick();
       const tile = document.querySelector('.tile--focus');
@@ -500,12 +504,25 @@ try {
       const others = [...document.querySelectorAll('.tile:not(.tile--focus)')]
         .map((e) => Math.round(e.getBoundingClientRect().width));
       const out = { focus: vm.focusPid, mine: vm.myPid, tw: t ? Math.round(t.width) : 0,
-                    th: t ? Math.round(t.height) : 0, sw: Math.round(s.width), vh: innerHeight, others };
+                    th: t ? Math.round(t.height) : 0, sw: Math.round(s.width), vh: innerHeight, others, gridTiles };
       vm.focusPid = '';
       return out;
     })()`);
-  if (big.focus === big.mine && big.tw > big.sw * 0.9 && big.th > big.vh * 0.45) {
-    console.log(`布局: 我最大 -> ${big.tw}x${big.th} (舞台宽 ${big.sw}, 屏高 ${big.vh}), 其余缩到 ${big.others.join('/')}px`);
+  // 1) 宫格里每格都是 16:9 的固定比例 (浏览器缩放/窗口变化不再把画面拉变形)
+  const sameW = big.gridTiles.length >= 2 && big.gridTiles.every((t) => Math.abs(t.w - big.gridTiles[0].w) <= 2);
+  const ratioOk = big.gridTiles.every((t) => Math.abs(t.h - t.w * 9 / 16) <= 10);
+  if (sameW && ratioOk) {
+    console.log(`宫格比例: ${big.gridTiles.map((t) => `${t.w}x${t.h}`).join(', ')} (都是 16:9)`);
+  } else {
+    failed = true;
+    console.error(`宫格比例断言失败 (应保持 16:9): ${JSON.stringify(big.gridTiles)}`);
+  }
+  // 2) "我最大": 大格明显压过别人, 别人还是完整小格 (没有被压成一条)
+  const bigMaxOther = Math.max(0, ...big.others);
+  const othersSmall = big.others.length > 0 && big.others.every((w) => w >= 150 && w <= 260);
+  if (big.focus === big.mine && big.tw > big.sw * 0.55 && big.th > big.vh * 0.4 &&
+      big.tw > bigMaxOther * 3 && othersSmall) {
+    console.log(`布局: 我最大 -> ${big.tw}x${big.th} (舞台宽 ${big.sw}, 屏高 ${big.vh}), 其余 ${big.others.join('/')}px`);
   } else {
     failed = true;
     console.error(`布局放大断言失败: ${JSON.stringify(big)}`);
